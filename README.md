@@ -430,6 +430,16 @@ vtune -collect memory-access -result-dir results\bfs_omp_mem -- `
 
 **Test machine:** 13th Gen Intel Core i7 (14 cores) · L1 1.2 MB / L2 11.5 MB / L3 24 MB · 16 GB RAM · NVIDIA RTX 5060 8 GB · Windows
 
+### Serial baselines
+
+Raw per-trial rows + metadata: [`results/lj_bfs_serial.csv`](results/lj_bfs_serial.csv), [`results/lj_bfs_serial.csv.meta.json`](results/lj_bfs_serial.csv.meta.json). Kernel time excludes CSR load.
+
+| Kernel | Graph | Variant | Setup | Median kernel (ms) | Harmonic-mean TEPS | Notes |
+|---|---|---|---|---|---|---|
+| BFS | LiveJournal (`data/livejournal.csr`) | serial | 8 random roots, seed=1, 1 warmup + 3 trials/root, `--validate` | 1241.73 | 5.19e7 | Directed CSR (V=4,847,571, E=68,475,391). Load ~152 ms. 6/8 roots reach ~4.40M verts / ~67.7M edges examined (~1.2–2.0 s); 2/8 roots have out-degree 0 (`visited=1`, ~24 ms init only). Commit `08a5912`. |
+
+Sample-graph check (hand distances + tree/relaxation validate): [`results/bfs_sample_serial_cli.csv`](results/bfs_sample_serial_cli.csv).
+
 **Speedup over serial baseline (higher is better)**
 
 | Kernel / Graph | omp | simd | cuda | mpi (N ranks) |
