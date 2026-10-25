@@ -1,0 +1,118 @@
+# --- Build trees (CMake / MSVC / Ninja) ---
+build/
+build-*/
+cmake-build-*/
+out/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+compile_commands.json
+CTestTestfile.cmake
+Testing/
+*.sln
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+*.dir/
+x64/
+Win32/
+[Dd]ebug/
+[Rr]elease/
+[Rr]elWithDebInfo/
+[Mm]inSizeRel/
+.vs/
+*.obj
+*.o
+*.a
+*.lib
+*.exp
+*.ilk
+*.pdb
+*.idb
+*.exe
+*.dll
+*.so
+*.dylib
+*.ipdb
+*.iobj
+
+# --- CUDA ---
+*.cubin
+*.fatbin
+*.fatbin.c
+*.ptx
+*.cudafe*
+*.module_id
+*.sm_*
+
+# --- Datasets (large; download / convert locally) ---
+# Keep the directory; ignore graph payloads and conversions.
+# Tiny fixtures in tests/tiny_graphs/ are NOT ignored — commit those.
+data/**
+!data/.gitkeep
+!data/README.md
+
+# --- Results: keep CSVs + figures; drop heavy profiler dumps ---
+results/**/*.nsys-rep
+results/**/*.nsys-rep.sqlite
+results/**/*.qdrep
+results/**/*.sqlite
+results/**/*.ncu-rep
+results/**/*_ncu*/
+results/**/r???hs/
+results/**/r???mem/
+results/**/*_hs/
+results/**/*_mem/
+results/**/*.vtune
+results/**/*.amplxe*
+*.nsys-rep
+*.ncu-rep
+*.qdrep
+
+# Optional: uncomment if figures are always regenerated from CSVs
+# results/**/*.png
+# results/**/*.pdf
+# results/**/*.svg
+
+# Keep result directory placeholders
+!results/.gitkeep
+!results/**/.gitkeep
+
+# --- Python (scripts/, plotting) ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+.venv/
+venv/
+env/
+.env
+.python-version
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# --- Editors / OS ---
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# --- Logs & temp ---
+*.log
+*.tmp
+*.temp
+*.bak
+*.cache
+core
+*.stackdump
+
+# --- Docker leftovers (if building images locally) ---
+docker/*.tar
+docker/*.img
