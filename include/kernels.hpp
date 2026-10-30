@@ -194,4 +194,61 @@ TcValidation validate_tc(const Graph& g, const TcResult& r,
                          TcOrientMode orient = TcOrientMode::Degree,
                          IntersectMode mode = IntersectMode::Merge);
 
+// ---- PageRank ---------------------------------------------------------------
+
+struct PageRankParams {
+  double damping = 0.85;
+  double tolerance = 1e-6;  // L1 residual stop
+  int max_iters = 100;
+};
+
+struct PageRankResult {
+  std::vector<double> scores;
+  int iterations = 0;
+  double residual_l1 = 0.0;
+  double score_sum = 0.0;
+  std::uint64_t edges_examined = 0;  // iterations * E (pull/push sweeps)
+  MpiPhaseStats mpi;
+};
+
+struct PageRankValidation {
+  bool ok = true;
+  std::vector<std::string> errors;
+};
+
+// Serial pull PageRank. `out_g` is out-CSR; `in_g` is the reverse (in-CSR).
+// Dangling mass is redistributed uniformly each iteration.
+PageRankResult pagerank_serial(const Graph& out_g, const Graph& in_g,
+                               PageRankParams params = {});
+
+// OpenMP pull PageRank: parallel over vertices; each thread writes only its
+// own score (no atomics). Dangling mass and L1 residual via reductions.
+// num_threads <= 0 leaves the OpenMP default.
+PageRankResult pagerank_omp(const Graph& out_g, const Graph& in_g,
+                            PageRankParams params = {}, int num_threads = 0);
+
+// OpenMP push PageRank: each vertex scatters score/outdeg along out-edges
+// with atomic adds into a next[] buffer. Contrasts with pull (omp).
+// Uses out-CSR only (no reverse graph).
+PageRankResult pagerank_omp_atomic(const Graph& out_g,
+                                   PageRankParams params = {},
+                                   int num_threads = 0);
+
+#if defined(PARGRAPH_HAS_MPI)
+// Hybrid MPI + OpenMP pull PageRank on a 1D vertex partition.
+// Replicated CSRs on every rank; each rank updates owned scores then
+// Allgatherv. Compute/comm split follows the BFS mpi pattern.
+PageRankResult pagerank_mpi(const MpiVertexPart& part, const Graph& out_g,
+                            const Graph& in_g, PageRankParams params = {},
+                            int num_threads = 0);
+#endif
+
+// Invariants: score size, finite values, sum ≈ 1, residual finite.
+// If `ref` is non-null, also checks L1/L∞ vs reference within `score_tol`.
+PageRankValidation validate_pagerank(const Graph& out_g,
+                                     const PageRankResult& r,
+                                     const PageRankParams& params,
+                                     const PageRankResult* ref = nullptr,
+                                     double score_tol = 1e-6);
+
 }  // namespace pargraph

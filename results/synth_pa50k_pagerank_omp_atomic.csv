@@ -1,0 +1,7 @@
+timestamp_utc,git_commit,hostname,os,cpu,compiler,build_type,kernel,variant,graph,num_vertices,num_edges,directed,threads,ranks,seed,trials_requested,load_time_ms,damping,tolerance,max_iters,trial,is_warmup,time_ms,iterations,residual_l1,score_sum,edges_examined,ms_per_iter,validated,valid_ok
+2026-10-30T21:48:37Z,7a2eb80,cursor,Linux,unknown,GCC,Release,pagerank,omp_atomic,/workspace/data/synth_pa50k.csr,50000,500000,1,4,1,1,5,1.25211,0.85,1e-06,100,-1,1,24.3255,12,5.25977e-07,1,6000000,2.02713,1,1
+2026-10-30T21:48:37Z,7a2eb80,cursor,Linux,unknown,GCC,Release,pagerank,omp_atomic,/workspace/data/synth_pa50k.csr,50000,500000,1,4,1,1,5,1.25211,0.85,1e-06,100,0,0,25.0821,12,5.25977e-07,1,6000000,2.09018,1,1
+2026-10-30T21:48:37Z,7a2eb80,cursor,Linux,unknown,GCC,Release,pagerank,omp_atomic,/workspace/data/synth_pa50k.csr,50000,500000,1,4,1,1,5,1.25211,0.85,1e-06,100,1,0,25.3178,12,5.25977e-07,1,6000000,2.10982,1,1
+2026-10-30T21:48:37Z,7a2eb80,cursor,Linux,unknown,GCC,Release,pagerank,omp_atomic,/workspace/data/synth_pa50k.csr,50000,500000,1,4,1,1,5,1.25211,0.85,1e-06,100,2,0,27.9894,12,5.25977e-07,1,6000000,2.33245,1,1
+2026-10-30T21:48:37Z,7a2eb80,cursor,Linux,unknown,GCC,Release,pagerank,omp_atomic,/workspace/data/synth_pa50k.csr,50000,500000,1,4,1,1,5,1.25211,0.85,1e-06,100,3,0,26.621,12,5.25977e-07,1,6000000,2.21841,1,1
+2026-10-30T21:48:37Z,7a2eb80,cursor,Linux,unknown,GCC,Release,pagerank,omp_atomic,/workspace/data/synth_pa50k.csr,50000,500000,1,4,1,1,5,1.25211,0.85,1e-06,100,4,0,25.3151,12,5.25977e-07,1,6000000,2.10959,1,1
