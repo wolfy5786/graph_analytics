@@ -22,12 +22,22 @@ struct MpiPhaseStats {
   std::uint64_t bytes_sent = 0;
 };
 
+// Optional per-level timing for direction-optimizing / instrumented BFS.
+struct BfsLevelStat {
+  std::int32_t level = 0;
+  std::uint64_t frontier = 0;
+  std::uint64_t edges_examined = 0;
+  double time_ms = 0.0;
+  bool bottom_up = false;
+};
+
 struct BfsResult {
   std::vector<std::int32_t> dist;    // kBfsUnreached if not reached
   std::vector<std::int32_t> parent;  // -1 if unreached; source parents itself
   std::uint64_t visited = 0;
   std::uint64_t edges_examined = 0;  // sum of degrees of dequeued vertices
   MpiPhaseStats mpi;
+  std::vector<BfsLevelStat> levels;  // populated when per_level=true
 };
 
 // Serial queue-based level-synchronous BFS. Works on whatever orientation the
@@ -43,6 +53,17 @@ BfsResult bfs_omp(const Graph& g, vtx_t source, int num_threads = 0);
 // the current level; atomic test-and-set claims each neighbor once; winners
 // write dist/parent and push into a thread-local next frontier, then merge.
 BfsResult bfs_omp_atomic(const Graph& g, vtx_t source, int num_threads = 0);
+
+// Direction-optimizing OpenMP BFS (Beamer et al. / GAPBS).
+// Top-down uses atomic TAS + thread-local next frontiers (same as omp_atomic).
+// Bottom-up scans unvisited vertices against a bitmap frontier via in-edges
+// (built on the fly for directed CSRs; reused for undirected). Switches with
+// alpha (growing) / beta (shrinking). Defaults match GAPBS (15 / 18).
+// When per_level is true, fills BfsResult::levels with frontier size, edges,
+// time, and top-down vs bottom-up for each level.
+BfsResult bfs_omp_diropt(const Graph& g, vtx_t source, int num_threads = 0,
+                         int alpha = 15, int beta = 18,
+                         bool per_level = false);
 
 // 1D contiguous vertex ownership. `local` holds the out-edges of [lo, hi)
 // with global neighbor ids. Built from an identical full graph on every rank

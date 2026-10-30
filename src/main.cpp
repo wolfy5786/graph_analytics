@@ -38,8 +38,8 @@ void usage(const char* argv0) {
   }
   std::cerr
       << "Usage: " << argv0
-      << " --kernel <bfs|cc|tc> --variant <serial|omp|omp_atomic|omp_edge|"
-         "mpi_atomic>"
+      << " --kernel <bfs|cc|tc> --variant <serial|omp|omp_atomic|omp_diropt|"
+         "omp_edge|mpi_atomic>"
       << " --graph <path.csr> [options]\n"
       << "Options:\n"
       << "  --sources <n>     random BFS roots (default 1)\n"
@@ -47,6 +47,9 @@ void usage(const char* argv0) {
       << "  --trials <n>      timed trials after warmup (default 1)\n"
       << "  --threads <n>     OpenMP threads per process (default: all cores;\n"
       << "                    mpi_atomic default is cores/ranks)\n"
+      << "  --alpha <n>       diropt growing threshold (default 15)\n"
+      << "  --beta <n>        diropt shrinking threshold (default 18)\n"
+      << "  --per-level       record per-level frontier/time (omp_diropt)\n"
       << "  --validate        correctness checks vs. serial invariants\n"
       << "  --output <csv>    write per-trial results CSV (+ .meta.json)\n"
       << "  --source <v>      fixed BFS source (disables random --sources)\n"
@@ -112,12 +115,16 @@ pargraph::BfsResult run_bfs_variant(const pargraph::Graph& g,
                                     pargraph::vtx_t src,
                                     const std::string& variant,
                                     int threads,
-                                    const pargraph::MpiVertexPart* part) {
+                                    const pargraph::MpiVertexPart* part,
+                                    int alpha, int beta, bool per_level) {
   if (variant == "omp") {
     return pargraph::bfs_omp(g, src, threads);
   }
   if (variant == "omp_atomic") {
     return pargraph::bfs_omp_atomic(g, src, threads);
+  }
+  if (variant == "omp_diropt") {
+    return pargraph::bfs_omp_diropt(g, src, threads, alpha, beta, per_level);
   }
 #ifdef PARGRAPH_HAS_MPI
   if (variant == "mpi_atomic") {
@@ -150,7 +157,8 @@ int run_bfs(const pargraph::Graph& g, pargraph::RunMetadata& meta,
             int sources, int trials, std::uint64_t seed, bool has_fixed_source,
             pargraph::vtx_t fixed_source, bool do_validate,
             const std::string& output_path,
-            const pargraph::MpiVertexPart* part) {
+            const pargraph::MpiVertexPart* part, int alpha, int beta,
+            bool per_level) {
   meta.sources = has_fixed_source ? 1 : sources;
 
   const auto srcs =
@@ -162,6 +170,8 @@ int run_bfs(const pargraph::Graph& g, pargraph::RunMetadata& meta,
   std::vector<double> timed_comm;
   std::uint64_t bytes_sum = 0;
   const bool mpi_run = meta.variant == "mpi_atomic";
+  // Direction-optimizing examines a different edge set; compare distances only.
+  const bool compare_edges = meta.variant != "omp_diropt";
 
   auto record = [&](pargraph::vtx_t src, int trial, bool warmup,
                     const pargraph::Timer& t, const pargraph::BfsResult& result,
@@ -200,6 +210,16 @@ int run_bfs(const pargraph::Graph& g, pargraph::RunMetadata& meta,
                   << " bytes_sent=" << row.bytes_sent;
       }
       std::cout << "\n";
+      if (per_level && !result.levels.empty()) {
+        for (const auto& lv : result.levels) {
+          std::cout << "  level=" << lv.level
+                    << " frontier=" << lv.frontier
+                    << " edges=" << lv.edges_examined
+                    << " time_ms=" << lv.time_ms
+                    << " mode=" << (lv.bottom_up ? "bottom_up" : "top_down")
+                    << "\n";
+        }
+      }
       std::cout.flush();
     }
   };
@@ -220,8 +240,10 @@ int run_bfs(const pargraph::Graph& g, pargraph::RunMetadata& meta,
         bad = 1;
       } else if (meta.variant != "serial") {
         const pargraph::BfsResult serial = pargraph::bfs_serial(g, src);
+        const bool edges_ok =
+            !compare_edges || result.edges_examined == serial.edges_examined;
         if (result.dist != serial.dist || result.visited != serial.visited ||
-            result.edges_examined != serial.edges_examined) {
+            !edges_ok) {
           std::cerr << "BFS parallel vs serial mismatch source=" << src
                     << " trial=" << trial << "\n";
           ok = false;
@@ -247,8 +269,8 @@ int run_bfs(const pargraph::Graph& g, pargraph::RunMetadata& meta,
 #endif
       pargraph::Timer t;
       t.start();
-      pargraph::BfsResult warm =
-          run_bfs_variant(g, src, meta.variant, meta.threads, part);
+      pargraph::BfsResult warm = run_bfs_variant(
+          g, src, meta.variant, meta.threads, part, alpha, beta, per_level);
       t.stop();
       bool ok = true;
       if (check_result(src, -1, warm, ok) != 0) {
@@ -265,8 +287,8 @@ int run_bfs(const pargraph::Graph& g, pargraph::RunMetadata& meta,
 #endif
       pargraph::Timer t;
       t.start();
-      pargraph::BfsResult r =
-          run_bfs_variant(g, src, meta.variant, meta.threads, part);
+      pargraph::BfsResult r = run_bfs_variant(
+          g, src, meta.variant, meta.threads, part, alpha, beta, per_level);
       t.stop();
       bool ok = true;
       if (check_result(src, trial, r, ok) != 0) {
@@ -534,6 +556,9 @@ int driver(int argc, char** argv) {
   int sources = 1;
   int trials = 1;
   int threads = 0;  // 0 = OpenMP default
+  int alpha = 15;
+  int beta = 18;
+  bool per_level = false;
   std::uint64_t seed = 1;
   bool do_validate = false;
   bool has_fixed_source = false;
@@ -572,6 +597,12 @@ int driver(int argc, char** argv) {
       trials = std::stoi(need("--trials"));
     } else if (arg == "--threads") {
       threads = std::stoi(need("--threads"));
+    } else if (arg == "--alpha") {
+      alpha = std::stoi(need("--alpha"));
+    } else if (arg == "--beta") {
+      beta = std::stoi(need("--beta"));
+    } else if (arg == "--per-level") {
+      per_level = true;
     } else if (arg == "--validate") {
       do_validate = true;
     } else if (arg == "--help" || arg == "-h") {
@@ -593,10 +624,11 @@ int driver(int argc, char** argv) {
     return 2;
   }
   if (variant != "serial" && variant != "omp" && variant != "omp_atomic" &&
-      variant != "omp_edge" && variant != "mpi_atomic") {
+      variant != "omp_diropt" && variant != "omp_edge" &&
+      variant != "mpi_atomic") {
     if (g_rank == 0) {
-      std::cerr << "only --variant serial|omp|omp_atomic|omp_edge|mpi_atomic "
-                   "is implemented\n";
+      std::cerr << "only --variant serial|omp|omp_atomic|omp_diropt|omp_edge|"
+                   "mpi_atomic is implemented\n";
     }
     return 2;
   }
@@ -660,7 +692,8 @@ int driver(int argc, char** argv) {
     if (variant == "mpi_atomic" && threads <= 0) {
       threads = std::max(1, omp_get_num_procs() / std::max(1, world));
     }
-    if (variant == "omp" || variant == "omp_atomic" || variant == "omp_edge" ||
+    if (variant == "omp" || variant == "omp_atomic" ||
+        variant == "omp_diropt" || variant == "omp_edge" ||
         variant == "mpi_atomic") {
       if (threads > 0) {
         omp_set_num_threads(threads);
@@ -738,7 +771,8 @@ int driver(int argc, char** argv) {
 
     if (kernel == "bfs") {
       return run_bfs(g, meta, sources, trials, seed, has_fixed_source,
-                     fixed_source, do_validate, output_path, &part);
+                     fixed_source, do_validate, output_path, &part, alpha, beta,
+                     per_level);
     }
     if (kernel == "cc") {
       return run_cc(g, meta, trials, do_validate, output_path);

@@ -453,6 +453,8 @@ Sample omp_atomic BFS check: [`results/bfs_sample_omp_atomic.csv`](results/bfs_s
 
 Sample mpi_atomic BFS check (1/2/4/8 ranks, including empty ranks): [`results/bfs_sample_mpi_atomic_np1.csv`](results/bfs_sample_mpi_atomic_np1.csv), [`results/bfs_sample_mpi_atomic_np2.csv`](results/bfs_sample_mpi_atomic_np2.csv), [`results/bfs_sample_mpi_atomic_np4.csv`](results/bfs_sample_mpi_atomic_np4.csv), [`results/bfs_sample_mpi_atomic_np8.csv`](results/bfs_sample_mpi_atomic_np8.csv). CLI (`mpiexec -n 2`): [`results/bfs_sample_mpi_atomic_cli.csv`](results/bfs_sample_mpi_atomic_cli.csv).
 
+Sample omp_diropt BFS check: [`results/bfs_sample_omp_diropt.csv`](results/bfs_sample_omp_diropt.csv), CLI [`results/bfs_sample_omp_diropt_cli.csv`](results/bfs_sample_omp_diropt_cli.csv). Synthetic shared-memory comparison (`bench_bfs_parallel`): `results/{grid256,ba50k}_bfs_{serial,omp,omp_atomic,omp_diropt}.csv` — analysis in [`docs/bfs-parallel.md`](docs/bfs-parallel.md).
+
 Sample CC check (2 components, largest=4): [`results/cc_sample_serial_cli.csv`](results/cc_sample_serial_cli.csv), [`results/cc_sample_serial.csv`](results/cc_sample_serial.csv).
 
 Sample TC check (6 triangles): [`results/tc_sample_serial.csv`](results/tc_sample_serial.csv), [`results/tc_sample_omp.csv`](results/tc_sample_omp.csv), [`results/tc_sample_omp_edge.csv`](results/tc_sample_omp_edge.csv); CLI [`results/tc_sample_serial_cli.csv`](results/tc_sample_serial_cli.csv). Design notes: [`docs/tc-parallel-design.md`](docs/tc-parallel-design.md).
@@ -462,6 +464,7 @@ Sample TC check (6 triangles): [`results/tc_sample_serial.csv`](results/tc_sampl
 | Kernel / Graph | omp | omp_atomic / omp_edge | simd | cuda | mpi (N ranks) |
 |---|---|---|---|---|---|
 | BFS / LiveJournal | 0.81× | 7.14× (omp_atomic) | | | 5.03× (2 ranks × 7 threads) |
+| BFS / BA-50k (synth, 4 thr) | 0.16× | 1.10× | | | | see also `omp_diropt` **2.06×** in [`docs/bfs-parallel.md`](docs/bfs-parallel.md) |
 | BFS / USA road | | | | | |
 | PageRank / LiveJournal | | | | | |
 | PageRank / Kronecker-22 | | | | | |
@@ -487,7 +490,7 @@ Sample TC check (6 triangles): [`results/tc_sample_serial.csv`](results/tc_sampl
 
 **Graph representation.** CSR with 32-bit vertex IDs and 64-bit offsets when edge count exceeds 2³². Neighbor lists sorted. Separate in-edge CSR for pull-based PageRank.
 
-**BFS.** Level-synchronous. Discovery with a plain check then CAS; thread-local buffers merged by prefix sum. Direction optimization (Beamer et al.) switches to bottom-up with a bitmap frontier when the frontier is large; bottom-up needs no atomics.
+**BFS.** Level-synchronous. Shared-memory designs: `omp` (no-atomic candidate merge), `omp_atomic` (TAS + thread-local next), `omp_diropt` (Beamer/GAPBS top-down ↔ bottom-up with bitmap frontier; `--alpha`/`--beta`/`--per-level`). Hybrid: `mpi_atomic` (1D ownership). Full write-up of designs, alternatives, and microbench tables: [`docs/bfs-parallel.md`](docs/bfs-parallel.md).
 
 **PageRank.** Pull-based formulation: each vertex sums contributions from its in-neighbors, so each output is written by one thread and no atomics are needed. Memory-bandwidth-bound; compare against the bandwidth roofline. Handle dangling vertices explicitly.
 
