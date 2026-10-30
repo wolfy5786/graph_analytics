@@ -38,7 +38,8 @@ void usage(const char* argv0) {
   }
   std::cerr
       << "Usage: " << argv0
-      << " --kernel <bfs|cc> --variant <serial|omp|omp_atomic|mpi_atomic>"
+      << " --kernel <bfs|cc|tc> --variant <serial|omp|omp_atomic|omp_edge|"
+         "mpi_atomic>"
       << " --graph <path.csr> [options]\n"
       << "Options:\n"
       << "  --sources <n>     random BFS roots (default 1)\n"
@@ -50,7 +51,43 @@ void usage(const char* argv0) {
       << "  --output <csv>    write per-trial results CSV (+ .meta.json)\n"
       << "  --source <v>      fixed BFS source (disables random --sources)\n"
       << "  --algo <name>     CC algorithm (default: unionfind)\n"
+      << "  --orient <degree|id>          TC edge orientation (default degree)\n"
+      << "  --intersect <merge|galloping> TC set intersection (default merge)\n"
+      << "TC variants: serial | omp (vertex-parallel) | omp_edge "
+         "(edge-parallel).\n"
       << "mpi_atomic is hybrid MPI+OpenMP. Launch with mpiexec -n <ranks>.\n";
+}
+
+pargraph::TcOrientMode parse_orient(const std::string& s) {
+  if (s == "degree") {
+    return pargraph::TcOrientMode::Degree;
+  }
+  if (s == "id") {
+    return pargraph::TcOrientMode::Id;
+  }
+  throw std::invalid_argument("unknown --orient (use degree|id)");
+}
+
+pargraph::IntersectMode parse_intersect(const std::string& s) {
+  if (s == "merge") {
+    return pargraph::IntersectMode::Merge;
+  }
+  if (s == "galloping") {
+    return pargraph::IntersectMode::Galloping;
+  }
+  throw std::invalid_argument("unknown --intersect (use merge|galloping)");
+}
+
+pargraph::TcResult run_tc_variant(const pargraph::Graph& oriented,
+                                  const std::string& variant,
+                                  pargraph::IntersectMode mode, int threads) {
+  if (variant == "omp") {
+    return pargraph::tc_omp(oriented, mode, threads);
+  }
+  if (variant == "omp_edge") {
+    return pargraph::tc_omp_edge(oriented, mode, threads);
+  }
+  return pargraph::tc_serial_on_oriented(oriented, mode);
 }
 
 std::vector<pargraph::vtx_t> pick_sources(const pargraph::Graph& g, int n,
@@ -369,6 +406,121 @@ int run_cc(const pargraph::Graph& g, pargraph::RunMetadata& meta, int trials,
   return 0;
 }
 
+int run_tc(const pargraph::Graph& g, pargraph::RunMetadata& meta, int trials,
+           bool do_validate, const std::string& output_path) {
+  const pargraph::TcOrientMode orient = parse_orient(meta.orient);
+  const pargraph::IntersectMode mode = parse_intersect(meta.intersect);
+
+  if (meta.variant != "serial" && meta.variant != "omp" &&
+      meta.variant != "omp_edge") {
+    std::cerr << "TC supports --variant serial|omp|omp_edge\n";
+    return 2;
+  }
+
+  pargraph::Timer orient_timer;
+  orient_timer.start();
+  pargraph::Graph oriented = pargraph::orient_graph(g, orient);
+  orient_timer.stop();
+  meta.orient_time_ms = orient_timer.elapsed_ms();
+
+  std::vector<pargraph::TcTrialRow> rows;
+  std::vector<double> timed_ms;
+  std::vector<double> timed_rate;
+  std::uint64_t last_triangles = 0;
+
+  auto run_one = [&](int trial_id, bool warmup) -> int {
+    pargraph::Timer t;
+    t.start();
+    pargraph::TcResult r =
+        run_tc_variant(oriented, meta.variant, mode, meta.threads);
+    t.stop();
+
+    pargraph::TcTrialRow row;
+    row.trial = trial_id;
+    row.is_warmup = warmup;
+    row.time_ms = t.elapsed_ms();
+    row.triangles = r.triangles;
+    row.wedges_examined = r.wedges_examined;
+    row.intersect_ops = r.intersect_ops;
+    row.intersect_rate =
+        (t.elapsed_sec() > 0.0)
+            ? static_cast<double>(r.intersect_ops) / t.elapsed_sec()
+            : 0.0;
+    last_triangles = r.triangles;
+
+    if (do_validate) {
+      row.validated = true;
+      const auto vr = pargraph::validate_tc(g, r, orient, mode);
+      row.valid_ok = vr.ok;
+      if (!vr.ok) {
+        std::cerr << "TC validate failed trial=" << trial_id << ":\n";
+        for (const auto& e : vr.errors) {
+          std::cerr << "  - " << e << "\n";
+        }
+        return 1;
+      }
+      if (meta.variant != "serial") {
+        const pargraph::TcResult serial =
+            pargraph::tc_serial_on_oriented(oriented, mode);
+        if (serial.triangles != r.triangles) {
+          std::cerr << "TC parallel vs serial mismatch trial=" << trial_id
+                    << " got=" << r.triangles
+                    << " expected=" << serial.triangles << "\n";
+          return 1;
+        }
+      }
+    }
+    rows.push_back(row);
+
+    if (!warmup) {
+      timed_ms.push_back(row.time_ms);
+      timed_rate.push_back(row.intersect_rate);
+      std::cout << "TC variant=" << meta.variant << " orient=" << meta.orient
+                << " intersect=" << meta.intersect << " trial=" << trial_id
+                << " time_ms=" << row.time_ms
+                << " triangles=" << row.triangles
+                << " wedges=" << row.wedges_examined
+                << " intersect_rate=" << row.intersect_rate << "\n";
+    }
+    return 0;
+  };
+
+  if (run_one(-1, true) != 0) {
+    return 1;
+  }
+  for (int trial = 0; trial < trials; ++trial) {
+    if (run_one(trial, false) != 0) {
+      return 1;
+    }
+  }
+
+  double min_ms = timed_ms.empty()
+                      ? 0.0
+                      : *std::min_element(timed_ms.begin(), timed_ms.end());
+  double max_ms = timed_ms.empty()
+                      ? 0.0
+                      : *std::max_element(timed_ms.begin(), timed_ms.end());
+  const double med_ms = pargraph::median_sorted(timed_ms);
+  const double med_rate = pargraph::median_sorted(timed_rate);
+
+  std::cout << "Summary (excl. warmup): median_ms=" << med_ms
+            << " min_ms=" << min_ms << " max_ms=" << max_ms
+            << " triangles=" << last_triangles
+            << " median_intersect_rate=" << med_rate
+            << " orient_ms=" << meta.orient_time_ms << "\n";
+
+  if (!output_path.empty()) {
+    pargraph::write_tc_results_csv(output_path, meta, rows);
+    const std::string meta_path = output_path + ".meta.json";
+    pargraph::write_tc_results_meta_json(meta_path, meta, med_ms, min_ms,
+                                         max_ms, last_triangles, med_rate,
+                                         timed_ms.size());
+    std::cout << "Wrote " << output_path << " and " << meta_path << "\n";
+  }
+
+  return 0;
+}
+
 }  // namespace
 
 int driver(int argc, char** argv) {
@@ -377,6 +529,8 @@ int driver(int argc, char** argv) {
   std::string graph_path;
   std::string output_path;
   std::string algo;
+  std::string orient = "degree";
+  std::string intersect = "merge";
   int sources = 1;
   int trials = 1;
   int threads = 0;  // 0 = OpenMP default
@@ -403,6 +557,10 @@ int driver(int argc, char** argv) {
       output_path = need("--output");
     } else if (arg == "--algo") {
       algo = need("--algo");
+    } else if (arg == "--orient") {
+      orient = need("--orient");
+    } else if (arg == "--intersect") {
+      intersect = need("--intersect");
     } else if (arg == "--sources") {
       sources = std::stoi(need("--sources"));
     } else if (arg == "--source") {
@@ -430,15 +588,15 @@ int driver(int argc, char** argv) {
     usage(argv[0]);
     return 2;
   }
-  if (kernel != "bfs" && kernel != "cc") {
-    std::cerr << "only --kernel bfs|cc is implemented\n";
+  if (kernel != "bfs" && kernel != "cc" && kernel != "tc") {
+    std::cerr << "only --kernel bfs|cc|tc is implemented\n";
     return 2;
   }
   if (variant != "serial" && variant != "omp" && variant != "omp_atomic" &&
-      variant != "mpi_atomic") {
+      variant != "omp_edge" && variant != "mpi_atomic") {
     if (g_rank == 0) {
-      std::cerr << "only --variant serial|omp|omp_atomic|mpi_atomic is "
-                   "implemented\n";
+      std::cerr << "only --variant serial|omp|omp_atomic|omp_edge|mpi_atomic "
+                   "is implemented\n";
     }
     return 2;
   }
@@ -453,6 +611,19 @@ int driver(int argc, char** argv) {
   if (kernel == "cc" && variant != "serial") {
     if (g_rank == 0) {
       std::cerr << "CC only supports --variant serial currently\n";
+    }
+    return 2;
+  }
+  if (kernel == "tc" && variant != "serial" && variant != "omp" &&
+      variant != "omp_edge") {
+    if (g_rank == 0) {
+      std::cerr << "TC supports --variant serial|omp|omp_edge\n";
+    }
+    return 2;
+  }
+  if (kernel == "bfs" && variant == "omp_edge") {
+    if (g_rank == 0) {
+      std::cerr << "omp_edge is a TC variant only\n";
     }
     return 2;
   }
@@ -479,10 +650,18 @@ int driver(int argc, char** argv) {
     meta.seed = seed;
     meta.trials = trials;
     meta.algo = algo;
+    meta.orient = orient;
+    meta.intersect = intersect;
+    // Validate TC flag values early (throws on bad input).
+    if (kernel == "tc") {
+      (void)parse_orient(orient);
+      (void)parse_intersect(intersect);
+    }
     if (variant == "mpi_atomic" && threads <= 0) {
       threads = std::max(1, omp_get_num_procs() / std::max(1, world));
     }
-    if (variant == "omp" || variant == "omp_atomic" || variant == "mpi_atomic") {
+    if (variant == "omp" || variant == "omp_atomic" || variant == "omp_edge" ||
+        variant == "mpi_atomic") {
       if (threads > 0) {
         omp_set_num_threads(threads);
       }
@@ -561,7 +740,10 @@ int driver(int argc, char** argv) {
       return run_bfs(g, meta, sources, trials, seed, has_fixed_source,
                      fixed_source, do_validate, output_path, &part);
     }
-    return run_cc(g, meta, trials, do_validate, output_path);
+    if (kernel == "cc") {
+      return run_cc(g, meta, trials, do_validate, output_path);
+    }
+    return run_tc(g, meta, trials, do_validate, output_path);
   } catch (const std::invalid_argument& ex) {
     if (g_rank == 0) {
       std::cerr << ex.what() << "\n";

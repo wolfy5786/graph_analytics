@@ -1,6 +1,7 @@
 #pragma once
 
 #include "graph.hpp"
+#include "intersect.hpp"
 
 #include <cstdint>
 #include <limits>
@@ -99,5 +100,48 @@ CcResult cc_serial_unionfind(const Graph& g);
 // Partition checks: every edge endpoints share a label; sizes sum to V;
 // num_components / largest_component match the label multiset.
 CcValidation validate_cc(const Graph& g, const CcResult& r);
+
+// ---- Triangle counting ----------------------------------------------------
+// Orient undirected (or symmetrized) edges from lower to higher rank so each
+// triangle is counted once via forward-adjacency intersection.
+enum class TcOrientMode : std::uint8_t { Degree = 0, Id = 1 };
+
+struct TcResult {
+  std::uint64_t triangles = 0;
+  std::uint64_t wedges_examined = 0;  // oriented edges processed
+  std::uint64_t intersect_ops = 0;    // intersection calls (= wedges)
+};
+
+struct TcValidation {
+  bool ok = true;
+  std::vector<std::string> errors;
+};
+
+// Build a directed forward CSR: keep u→v iff rank(u) < rank(v) under orient.
+// Neighbor lists are sorted. Orientation is preprocessing, not kernel time.
+Graph orient_graph(const Graph& g, TcOrientMode orient);
+
+// Serial forward triangle counting on an undirected/symmetrized CSR.
+TcResult tc_serial(const Graph& g, TcOrientMode orient = TcOrientMode::Degree,
+                   IntersectMode mode = IntersectMode::Merge);
+
+// Serial count on a pre-oriented forward CSR (kernel-only path).
+TcResult tc_serial_on_oriented(const Graph& oriented,
+                               IntersectMode mode = IntersectMode::Merge);
+
+// OpenMP Design A: parallel over vertices, dynamic schedule, reduction.
+TcResult tc_omp(const Graph& oriented, IntersectMode mode = IntersectMode::Merge,
+                int num_threads = 0);
+
+// OpenMP Design B: flatten oriented edges, parallel over edges, reduction.
+TcResult tc_omp_edge(const Graph& oriented,
+                     IntersectMode mode = IntersectMode::Merge,
+                     int num_threads = 0);
+
+// Exact-total checks: serial recount, merge↔galloping cross-check, and on
+// tiny graphs a brute edge-intersection / 3 oracle (needs symmetrized CSR).
+TcValidation validate_tc(const Graph& g, const TcResult& r,
+                         TcOrientMode orient = TcOrientMode::Degree,
+                         IntersectMode mode = IntersectMode::Merge);
 
 }  // namespace pargraph

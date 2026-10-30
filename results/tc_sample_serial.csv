@@ -1,0 +1,5 @@
+timestamp_utc,git_commit,hostname,os,cpu,compiler,build_type,kernel,variant,orient,intersect,graph,num_vertices,num_edges,directed,threads,ranks,seed,trials_requested,load_time_ms,orient_time_ms,trial,is_warmup,time_ms,triangles,wedges_examined,intersect_ops,intersect_rate,validated,valid_ok
+2026-10-30T21:34:14Z,7a2eb80,cursor,Linux,unknown,GCC,Release,tc,serial,degree,merge,/workspace/tests/tiny_graphs/tc_sample.csr,7,22,0,1,1,1,3,0,0.000889,-1,1,0.000353,6,11,11,3.11615e+07,1,1
+2026-10-30T21:34:14Z,7a2eb80,cursor,Linux,unknown,GCC,Release,tc,serial,degree,merge,/workspace/tests/tiny_graphs/tc_sample.csr,7,22,0,1,1,1,3,0,0.000889,0,0,0.000154,6,11,11,7.14286e+07,1,1
+2026-10-30T21:34:14Z,7a2eb80,cursor,Linux,unknown,GCC,Release,tc,serial,degree,merge,/workspace/tests/tiny_graphs/tc_sample.csr,7,22,0,1,1,1,3,0,0.000889,1,0,0.000155,6,11,11,7.09677e+07,1,1
+2026-10-30T21:34:14Z,7a2eb80,cursor,Linux,unknown,GCC,Release,tc,serial,degree,merge,/workspace/tests/tiny_graphs/tc_sample.csr,7,22,0,1,1,1,3,0,0.000889,2,0,8.2e-05,6,11,11,1.34146e+08,1,1
