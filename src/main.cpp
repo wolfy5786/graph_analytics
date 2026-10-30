@@ -28,6 +28,7 @@ static int g_rank = 0;
 
 #ifdef PARGRAPH_HAS_MPI
 int run_bfs_mpi_atomic_tests();
+int run_cc_mpi_atomic_tests();
 #endif
 
 namespace {
@@ -53,7 +54,9 @@ void usage(const char* argv0) {
       << "  --validate        correctness checks vs. serial invariants\n"
       << "  --output <csv>    write per-trial results CSV (+ .meta.json)\n"
       << "  --source <v>      fixed BFS source (disables random --sources)\n"
-      << "  --algo <name>     CC algorithm (default: unionfind)\n"
+      << "  --algo <name>     CC algorithm: unionfind (serial default),\n"
+      << "                    labelprop (omp/omp_atomic/mpi_atomic default),\n"
+      << "                    sv|afforest (omp_atomic only)\n"
       << "  --orient <degree|id>          TC edge orientation (default degree)\n"
       << "  --intersect <merge|galloping> TC set intersection (default merge)\n"
       << "TC variants: serial | omp (vertex-parallel) | omp_edge "
@@ -338,60 +341,155 @@ int run_bfs(const pargraph::Graph& g, pargraph::RunMetadata& meta,
   return 0;
 }
 
-int run_cc(const pargraph::Graph& g, pargraph::RunMetadata& meta, int trials,
-           bool do_validate, const std::string& output_path) {
-  if (meta.algo.empty()) {
-    meta.algo = "unionfind";
+pargraph::CcResult run_cc_variant(const pargraph::Graph& g,
+                                  const std::string& variant,
+                                  const std::string& algo, int threads,
+                                  const pargraph::MpiVertexPart* part) {
+  if (variant == "omp") {
+    return pargraph::cc_omp(g, threads);
   }
-  if (meta.algo != "unionfind") {
-    std::cerr << "only --algo unionfind is implemented for serial CC\n";
+  if (variant == "omp_atomic") {
+    return pargraph::cc_omp_atomic(g, threads, algo);
+  }
+#ifdef PARGRAPH_HAS_MPI
+  if (variant == "mpi_atomic") {
+    return pargraph::cc_mpi_atomic(*part, threads);
+  }
+#else
+  (void)part;
+#endif
+  return pargraph::cc_serial_unionfind(g);
+}
+
+int run_cc(const pargraph::Graph& g, pargraph::RunMetadata& meta, int trials,
+           bool do_validate, const std::string& output_path,
+           const pargraph::MpiVertexPart* part) {
+  if (meta.algo.empty()) {
+    if (meta.variant == "serial") {
+      meta.algo = "unionfind";
+    } else {
+      meta.algo = "labelprop";
+    }
+  }
+  if (meta.variant == "serial" && meta.algo != "unionfind") {
+    if (g_rank == 0) {
+      std::cerr << "serial CC only supports --algo unionfind\n";
+    }
+    return 2;
+  }
+  if (meta.variant == "omp" && meta.algo != "labelprop") {
+    if (g_rank == 0) {
+      std::cerr << "omp CC only supports --algo labelprop "
+                   "(two-phase, no atomics)\n";
+    }
+    return 2;
+  }
+  if (meta.variant == "omp_atomic" && meta.algo != "labelprop" &&
+      meta.algo != "sv" && meta.algo != "afforest") {
+    if (g_rank == 0) {
+      std::cerr << "omp_atomic CC supports --algo labelprop|sv|afforest\n";
+    }
+    return 2;
+  }
+  if (meta.variant == "mpi_atomic" && meta.algo != "labelprop") {
+    if (g_rank == 0) {
+      std::cerr << "mpi_atomic CC only supports --algo labelprop\n";
+    }
     return 2;
   }
 
   std::vector<pargraph::CcTrialRow> rows;
   std::vector<double> timed_ms;
+  std::vector<double> timed_compute;
+  std::vector<double> timed_comm;
+  std::uint64_t bytes_sum = 0;
   std::uint64_t last_comps = 0;
   std::uint64_t last_largest = 0;
+  std::uint64_t last_rounds = 0;
+  const bool mpi_run = meta.variant == "mpi_atomic";
+  const pargraph::CcResult serial_oracle =
+      do_validate && meta.variant != "serial" ? pargraph::cc_serial_unionfind(g)
+                                              : pargraph::CcResult{};
 
   auto run_one = [&](int trial_id, bool warmup) -> int {
+#ifdef PARGRAPH_HAS_MPI
+    if (mpi_run) {
+      mpi_barrier();
+    }
+#endif
     pargraph::Timer t;
     t.start();
-    pargraph::CcResult r = pargraph::cc_serial_unionfind(g);
+    pargraph::CcResult r =
+        run_cc_variant(g, meta.variant, meta.algo, meta.threads, part);
     t.stop();
 
-    pargraph::CcTrialRow row;
-    row.trial = trial_id;
-    row.is_warmup = warmup;
-    row.time_ms = t.elapsed_ms();
-    row.num_components = r.num_components;
-    row.largest_component = r.largest_component;
-    row.edges_united = r.edges_united;
-    last_comps = r.num_components;
-    last_largest = r.largest_component;
+    int bad = 0;
+    bool ok = true;
+    if (g_rank == 0) {
+      pargraph::CcTrialRow row;
+      row.trial = trial_id;
+      row.is_warmup = warmup;
+      row.time_ms = t.elapsed_ms();
+      row.num_components = r.num_components;
+      row.largest_component = r.largest_component;
+      row.edges_united = r.edges_united;
+      row.rounds = r.rounds;
+      row.compute_ms = r.mpi.compute_sec * 1e3;
+      row.comm_ms = r.mpi.comm_sec * 1e3;
+      row.bytes_sent = r.mpi.bytes_sent;
+      last_comps = r.num_components;
+      last_largest = r.largest_component;
+      last_rounds = r.rounds;
 
-    if (do_validate) {
-      row.validated = true;
-      const auto vr = pargraph::validate_cc(g, r);
-      row.valid_ok = vr.ok;
-      if (!vr.ok) {
-        std::cerr << "CC validate failed trial=" << trial_id << ":\n";
-        for (const auto& e : vr.errors) {
-          std::cerr << "  - " << e << "\n";
+      if (do_validate) {
+        row.validated = true;
+        const auto vr = pargraph::validate_cc(g, r);
+        ok = vr.ok;
+        if (!vr.ok) {
+          std::cerr << "CC validate failed trial=" << trial_id << ":\n";
+          for (const auto& e : vr.errors) {
+            std::cerr << "  - " << e << "\n";
+          }
+          bad = 1;
+        } else if (meta.variant != "serial") {
+          if (r.num_components != serial_oracle.num_components ||
+              r.largest_component != serial_oracle.largest_component ||
+              !pargraph::cc_same_partition(r.label, serial_oracle.label)) {
+            std::cerr << "CC parallel vs serial partition mismatch trial="
+                      << trial_id << "\n";
+            ok = false;
+            bad = 1;
+          }
         }
-        return 1;
+        row.valid_ok = ok;
+      }
+      rows.push_back(row);
+
+      if (!warmup) {
+        timed_ms.push_back(row.time_ms);
+        timed_compute.push_back(row.compute_ms);
+        timed_comm.push_back(row.comm_ms);
+        bytes_sum += row.bytes_sent;
+        std::cout << "CC variant=" << meta.variant << " algo=" << meta.algo
+                  << " trial=" << trial_id << " time_ms=" << row.time_ms
+                  << " components=" << row.num_components
+                  << " largest=" << row.largest_component
+                  << " rounds=" << row.rounds
+                  << " edges_united=" << row.edges_united;
+        if (mpi_run) {
+          std::cout << " compute_ms=" << row.compute_ms
+                    << " comm_ms=" << row.comm_ms
+                    << " bytes_sent=" << row.bytes_sent;
+        }
+        std::cout << "\n";
       }
     }
-    rows.push_back(row);
-
-    if (!warmup) {
-      timed_ms.push_back(row.time_ms);
-      std::cout << "CC algo=" << meta.algo << " trial=" << trial_id
-                << " time_ms=" << row.time_ms
-                << " components=" << row.num_components
-                << " largest=" << row.largest_component
-                << " edges_united=" << row.edges_united << "\n";
+#ifdef PARGRAPH_HAS_MPI
+    if (mpi_run) {
+      bad = mpi_agree(bad);
     }
-    return 0;
+#endif
+    return bad;
   };
 
   if (run_one(-1, true) != 0) {
@@ -403,6 +501,10 @@ int run_cc(const pargraph::Graph& g, pargraph::RunMetadata& meta, int trials,
     }
   }
 
+  if (g_rank != 0) {
+    return 0;
+  }
+
   double min_ms = timed_ms.empty()
                       ? 0.0
                       : *std::min_element(timed_ms.begin(), timed_ms.end());
@@ -410,18 +512,29 @@ int run_cc(const pargraph::Graph& g, pargraph::RunMetadata& meta, int trials,
                       ? 0.0
                       : *std::max_element(timed_ms.begin(), timed_ms.end());
   const double med_ms = pargraph::median_sorted(timed_ms);
+  const double med_compute = pargraph::median_sorted(timed_compute);
+  const double med_comm = pargraph::median_sorted(timed_comm);
 
   std::cout << "Summary (excl. warmup): median_ms=" << med_ms
             << " min_ms=" << min_ms << " max_ms=" << max_ms
             << " components=" << last_comps << " largest=" << last_largest
-            << "\n";
+            << " rounds=" << last_rounds;
+  if (mpi_run) {
+    const double phase = med_compute + med_comm;
+    const double share = phase > 0.0 ? med_comm / phase : 0.0;
+    std::cout << " median_compute_ms=" << med_compute
+              << " median_comm_ms=" << med_comm << " comm_share=" << share
+              << " bytes_sent=" << bytes_sum
+              << " distribution_ms=" << meta.distribution_time_ms;
+  }
+  std::cout << "\n";
 
   if (!output_path.empty()) {
     pargraph::write_cc_results_csv(output_path, meta, rows);
     const std::string meta_path = output_path + ".meta.json";
-    pargraph::write_cc_results_meta_json(meta_path, meta, med_ms, min_ms,
-                                         max_ms, last_comps, last_largest,
-                                         timed_ms.size());
+    pargraph::write_cc_results_meta_json(
+        meta_path, meta, med_ms, min_ms, max_ms, last_comps, last_largest,
+        timed_ms.size(), last_rounds, med_compute, med_comm, bytes_sum);
     std::cout << "Wrote " << output_path << " and " << meta_path << "\n";
   }
 
@@ -640,9 +753,10 @@ int driver(int argc, char** argv) {
     return 2;
   }
 #endif
-  if (kernel == "cc" && variant != "serial") {
+  if (kernel == "cc" && variant != "serial" && variant != "omp" &&
+      variant != "omp_atomic" && variant != "mpi_atomic") {
     if (g_rank == 0) {
-      std::cerr << "CC only supports --variant serial currently\n";
+      std::cerr << "CC supports --variant serial|omp|omp_atomic|mpi_atomic\n";
     }
     return 2;
   }
@@ -775,7 +889,7 @@ int driver(int argc, char** argv) {
                      per_level);
     }
     if (kernel == "cc") {
-      return run_cc(g, meta, trials, do_validate, output_path);
+      return run_cc(g, meta, trials, do_validate, output_path, &part);
     }
     return run_tc(g, meta, trials, do_validate, output_path);
   } catch (const std::invalid_argument& ex) {
@@ -807,6 +921,11 @@ int main(int argc, char** argv) {
   }
   if (argc >= 2 && std::string(argv[1]) == "--mpi-self-test") {
     const int rc = run_bfs_mpi_atomic_tests();
+    MPI_Finalize();
+    return rc;
+  }
+  if (argc >= 2 && std::string(argv[1]) == "--cc-mpi-self-test") {
+    const int rc = run_cc_mpi_atomic_tests();
     MPI_Finalize();
     return rc;
   }

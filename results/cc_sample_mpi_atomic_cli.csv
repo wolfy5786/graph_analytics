@@ -1,0 +1,5 @@
+timestamp_utc,git_commit,hostname,os,cpu,compiler,build_type,kernel,variant,algo,graph,num_vertices,num_edges,directed,threads,ranks,seed,trials_requested,load_time_ms,trial,is_warmup,time_ms,num_components,largest_component,edges_united,rounds,validated,valid_ok,compute_ms,comm_ms,bytes_sent
+2026-10-30T21:38:10Z,7a2eb80,cursor,Linux,unknown,Clang,Release,cc,mpi_atomic,labelprop,tests/tiny_graphs/cc_sample.csr,6,10,0,2,2,1,3,0.026843,-1,1,0.113489,2,4,12,2,1,1,0.087076,0.007965,96
+2026-10-30T21:38:10Z,7a2eb80,cursor,Linux,unknown,Clang,Release,cc,mpi_atomic,labelprop,tests/tiny_graphs/cc_sample.csr,6,10,0,2,2,1,3,0.026843,0,0,0.03826,2,4,12,2,1,1,0.012384,0.012422,96
+2026-10-30T21:38:10Z,7a2eb80,cursor,Linux,unknown,Clang,Release,cc,mpi_atomic,labelprop,tests/tiny_graphs/cc_sample.csr,6,10,0,2,2,1,3,0.026843,1,0,0.026215,2,4,12,2,1,1,0.011124,0.002917,96
+2026-10-30T21:38:10Z,7a2eb80,cursor,Linux,unknown,Clang,Release,cc,mpi_atomic,labelprop,tests/tiny_graphs/cc_sample.csr,6,10,0,2,2,1,3,0.026843,2,0,0.025886,2,4,12,2,1,1,0.010953,0.003305,96

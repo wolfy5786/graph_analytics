@@ -441,6 +441,13 @@ Raw per-trial rows + metadata: [`results/lj_bfs_serial.csv`](results/lj_bfs_seri
 | BFS | LiveJournal (`data/livejournal.csr`) | omp_atomic (atomic visited TAS + thread-local next) | 14 threads, 8 random roots, seed=1, 1 warmup + 3 trials/root, `--validate` (Graph500 + exact dist vs serial) | 173.99 | 3.84e8 | Same graph/roots as serial. Load ~264 ms. Speedup ≈ **7.14×** vs serial median. Plain load before CAS reduces atomic traffic on already-visited neighbors. See [`results/lj_bfs_omp_atomic.csv`](results/lj_bfs_omp_atomic.csv) + [`.meta.json`](results/lj_bfs_omp_atomic.csv.meta.json). |
 | BFS | LiveJournal (`data/livejournal.csr`) | mpi_atomic (hybrid MPI + OpenMP, 1D vertex ownership, atomic TAS) | `mpiexec -n 2`, 7 threads/rank, 8 random roots, seed=1, 1 warmup + 3 trials/root, `--validate` (Graph500 + exact dist/edges vs serial) | 246.66 | 2.65e8 | Same graph/roots as serial. Load ~160 ms. 1D edge slice ~51 ms, excluded from kernel time. Speedup ≈ **5.03×** vs serial median. Slowest rank: median compute 192 ms, comm 38 ms (**16.7%** of that split, including MPI wait). Discovery payload ~22.8 MB/trial on the large roots. See [`results/lj_bfs_mpi_atomic.csv`](results/lj_bfs_mpi_atomic.csv) + [`.meta.json`](results/lj_bfs_mpi_atomic.csv.meta.json). |
 | CC | LiveJournal (`data/livejournal.csr`) | serial union-find | 1 warmup + 3 trials, `--validate` | 10457 | — | WCC via union over directed arcs (V=4,847,571, E=68,475,391). Load ~208 ms. **1876** components, largest **4,843,953**. Debug build, commit `217f330`. See [`results/lj_cc_serial.csv`](results/lj_cc_serial.csv) + [`.meta.json`](results/lj_cc_serial.csv.meta.json). |
+| CC | wiki-Vote (`data/wiki_vote.csr`) | serial union-find | 1 warmup + 3 trials, `--validate` | 0.335 | — | Directed WCC (V=8298, E=103689). **1207** components, largest **7066**. Release, 4-core Linux. See [`results/wiki_cc_serial.csv`](results/wiki_cc_serial.csv). |
+| CC | wiki-Vote | omp (no-atomic undirected proposals + reduction-tree merge) | 4 threads, `--validate` vs serial partition | 61.4 | — | ≈ **0.005×** vs serial (candidate sort/dedupe dominates; BFS-`omp` twin). See [`results/wiki_cc_omp.csv`](results/wiki_cc_omp.csv). |
+| CC | wiki-Vote | omp_atomic labelprop (`atomicMin`) | 4 threads, `--validate` | 0.302 | — | ≈ **1.11×** vs serial. Best shared-memory parallel design on this graph. See [`results/wiki_cc_omp_atomic.csv`](results/wiki_cc_omp_atomic.csv). |
+| CC | wiki-Vote | omp_atomic sv | 4 threads, `--validate` | 1.33 | — | Shiloach–Vishkin CAS hooking. See [`results/wiki_cc_omp_atomic_sv.csv`](results/wiki_cc_omp_atomic_sv.csv). |
+| CC | wiki-Vote | omp_atomic afforest | 4 threads, `--validate` | 1.30 | — | Sample-then-finish (exact). See [`results/wiki_cc_omp_atomic_afforest.csv`](results/wiki_cc_omp_atomic_afforest.csv). |
+| CC | wiki-Vote | mpi_atomic labelprop | `mpiexec -n 2`, 2 threads/rank, `--validate` | 0.703 | — | ≈ **0.48×** vs serial. Comm share ~33% of compute+comm. See [`results/wiki_cc_mpi_atomic.csv`](results/wiki_cc_mpi_atomic.csv). |
+| CC | synthetic blocks (`data/synthetic_cc.csr`) | serial / omp / omp_atomic (labelprop\|sv\|afforest) / mpi_atomic | 4 threads (MPI 2×2), `--validate` | see notes | — | V=50k, E=798k, 6 components. Medians: serial 2.84; omp 775; atomicMin 2.91; sv 9.20; afforest 5.86; mpi 4.95 ms. Files: [`results/synth_cc_*.csv`](results/). Design writeup: [`docs/cc-parallel.md`](docs/cc-parallel.md). |
 | TC | Synth-5k (`tests/tiny_graphs/tc_synth_5k.csr`) | serial forward (degree orient, merge) | 1 warmup + 5 trials, `--validate` | 2.691 | — | Undirected (V=5000, E=89658), **6924** triangles. Orient ~0.91 ms (excluded). Median intersect rate ≈ 1.67e7 ops/s. See [`results/tc_synth5k_serial.csv`](results/tc_synth5k_serial.csv). |
 | TC | Synth-5k | omp (vertex-parallel, dynamic) | 4 threads, degree+merge, `--validate` | 0.825 | — | Speedup ≈ **3.26×** vs serial. See [`results/tc_synth5k_omp_t4.csv`](results/tc_synth5k_omp_t4.csv). |
 | TC | Synth-5k | omp_edge (edge-parallel + flatten) | 4 threads, degree+merge, `--validate` | 1.057 | — | Speedup ≈ **2.55×** vs serial; flatten cost loses to vertex-parallel on this graph. See [`results/tc_synth5k_omp_edge_t4.csv`](results/tc_synth5k_omp_edge_t4.csv). |
@@ -457,6 +464,12 @@ Sample omp_diropt BFS check: [`results/bfs_sample_omp_diropt.csv`](results/bfs_s
 
 Sample CC check (2 components, largest=4): [`results/cc_sample_serial_cli.csv`](results/cc_sample_serial_cli.csv), [`results/cc_sample_serial.csv`](results/cc_sample_serial.csv).
 
+Sample omp CC: [`results/cc_sample_omp.csv`](results/cc_sample_omp.csv), CLI [`results/cc_sample_omp_cli.csv`](results/cc_sample_omp_cli.csv).
+
+Sample omp_atomic CC (labelprop / sv / afforest): [`results/cc_sample_omp_atomic.csv`](results/cc_sample_omp_atomic.csv), [`results/cc_sample_omp_atomic_sv.csv`](results/cc_sample_omp_atomic_sv.csv), [`results/cc_sample_omp_atomic_afforest.csv`](results/cc_sample_omp_atomic_afforest.csv).
+
+Sample mpi_atomic CC (1/2/4/8 ranks): [`results/cc_sample_mpi_atomic_np1.csv`](results/cc_sample_mpi_atomic_np1.csv) … [`np8`](results/cc_sample_mpi_atomic_np8.csv). CLI (`mpiexec -n 2`): [`results/cc_sample_mpi_atomic_cli.csv`](results/cc_sample_mpi_atomic_cli.csv).
+
 Sample TC check (6 triangles): [`results/tc_sample_serial.csv`](results/tc_sample_serial.csv), [`results/tc_sample_omp.csv`](results/tc_sample_omp.csv), [`results/tc_sample_omp_edge.csv`](results/tc_sample_omp_edge.csv); CLI [`results/tc_sample_serial_cli.csv`](results/tc_sample_serial_cli.csv). Design notes: [`docs/tc-parallel-design.md`](docs/tc-parallel-design.md).
 
 **Speedup over serial baseline (higher is better)**
@@ -468,6 +481,8 @@ Sample TC check (6 triangles): [`results/tc_sample_serial.csv`](results/tc_sampl
 | BFS / USA road | | | | | |
 | PageRank / LiveJournal | | | | | |
 | PageRank / Kronecker-22 | | | | | |
+| CC / wiki-Vote | 0.005× | 1.11× (labelprop) | | | 0.48× (2 ranks × 2 threads) |
+| CC / synthetic-50k | 0.004× | 0.97× (labelprop) | | | 0.57× (2 ranks × 2 threads) |
 | CC / Orkut | | | | | |
 | CC / USA road | | | | | |
 | TC / Synth-5k (4 threads) | 3.26× | 2.55× (omp_edge) | | | |
@@ -494,7 +509,7 @@ Sample TC check (6 triangles): [`results/tc_sample_serial.csv`](results/tc_sampl
 
 **PageRank.** Pull-based formulation: each vertex sums contributions from its in-neighbors, so each output is written by one thread and no atomics are needed. Memory-bandwidth-bound; compare against the bandwidth roofline. Handle dangling vertices explicitly.
 
-**Connected Components.** Compare label propagation, Shiloach-Vishkin, and Afforest (sampling-based). Use atomic CAS or `atomicMin` for hooking; pointer jumping to shorten chains. Report rounds to convergence.
+**Connected Components.** Parallel designs documented and benchmarked in [`docs/cc-parallel.md`](docs/cc-parallel.md): no-atomic OpenMP (BFS-`omp` twin with undirected hook proposals + reduction-tree merge), `atomicMin` label propagation, Shiloach–Vishkin, Afforest (exact finish), and hybrid MPI+OpenMP Allreduce-MIN. Serial union-find remains the oracle. Report rounds to convergence; compare partitions, not raw label ids.
 
 **Triangle Counting.** Orient edges from lower to higher degree (or ID) so each triangle is counted once and hub work shrinks. Intersect sorted adjacency lists with merge or galloping (SIMD/bitmap later). Two OpenMP designs: vertex-parallel (`omp`) and edge-parallel (`omp_edge`); see [`docs/tc-parallel-design.md`](docs/tc-parallel-design.md). Schedule dynamically because work per edge varies enormously.
 

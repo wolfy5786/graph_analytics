@@ -198,8 +198,12 @@ struct CcTrialRow {
   std::uint64_t num_components = 0;
   std::uint64_t largest_component = 0;
   std::uint64_t edges_united = 0;
+  std::uint64_t rounds = 0;
   bool validated = false;
   bool valid_ok = false;
+  double compute_ms = 0.0;
+  double comm_ms = 0.0;
+  std::uint64_t bytes_sent = 0;
 };
 
 inline void write_cc_results_csv(const std::string& path,
@@ -210,11 +214,16 @@ inline void write_cc_results_csv(const std::string& path,
     throw std::runtime_error("failed to write results CSV: " + path);
   }
 
+  const bool mpi_cols = reports_mpi_split(meta);
   out << "timestamp_utc,git_commit,hostname,os,cpu,compiler,build_type,"
          "kernel,variant,algo,graph,num_vertices,num_edges,directed,"
          "threads,ranks,seed,trials_requested,load_time_ms,"
          "trial,is_warmup,time_ms,num_components,largest_component,"
-         "edges_united,validated,valid_ok\n";
+         "edges_united,rounds,validated,valid_ok";
+  if (mpi_cols) {
+    out << ",compute_ms,comm_ms,bytes_sent";
+  }
+  out << "\n";
 
   for (const auto& r : rows) {
     out << csv_escape(meta.timestamp_utc) << ','
@@ -229,8 +238,12 @@ inline void write_cc_results_csv(const std::string& path,
         << ',' << meta.seed << ',' << meta.trials << ',' << meta.load_time_ms
         << ',' << r.trial << ',' << (r.is_warmup ? 1 : 0) << ',' << r.time_ms
         << ',' << r.num_components << ',' << r.largest_component << ','
-        << r.edges_united << ',' << (r.validated ? 1 : 0) << ','
-        << (r.valid_ok ? 1 : 0) << '\n';
+        << r.edges_united << ',' << r.rounds << ',' << (r.validated ? 1 : 0)
+        << ',' << (r.valid_ok ? 1 : 0);
+    if (mpi_cols) {
+      out << ',' << r.compute_ms << ',' << r.comm_ms << ',' << r.bytes_sent;
+    }
+    out << '\n';
   }
 }
 
@@ -241,7 +254,11 @@ inline void write_cc_results_meta_json(const std::string& path,
                                        double max_time_ms,
                                        std::uint64_t num_components,
                                        std::uint64_t largest_component,
-                                       std::uint64_t timed_trials) {
+                                       std::uint64_t timed_trials,
+                                       std::uint64_t rounds = 0,
+                                       double median_compute_ms = 0.0,
+                                       double median_comm_ms = 0.0,
+                                       std::uint64_t bytes_sent = 0) {
   std::ofstream out(path);
   if (!out) {
     throw std::runtime_error("failed to write results meta JSON: " + path);
@@ -259,6 +276,19 @@ inline void write_cc_results_meta_json(const std::string& path,
     o << '"';
     return o.str();
   };
+
+  const bool mpi_stats = reports_mpi_split(meta);
+  std::string notes =
+      "Kernel time excludes graph load/preprocess. "
+      "On directed CSR, each arc is treated as undirected (WCC). "
+      "Parallel variants compare partitions to serial union-find "
+      "(label values may differ). rounds counts hooking / LP iterations.";
+  if (mpi_stats) {
+    notes +=
+        " distribution_time_ms is the 1D edge slice and is excluded from "
+        "kernel time. compute_ms/comm_ms are the slowest rank's phase split "
+        "(comm includes wait inside MPI). bytes_sent sums Allreduce payloads.";
+  }
 
   out << "{\n"
       << "  \"timestamp_utc\": " << q(meta.timestamp_utc) << ",\n"
@@ -279,16 +309,24 @@ inline void write_cc_results_meta_json(const std::string& path,
       << "  \"ranks\": " << meta.ranks << ",\n"
       << "  \"seed\": " << meta.seed << ",\n"
       << "  \"trials\": " << meta.trials << ",\n"
-      << "  \"load_time_ms\": " << meta.load_time_ms << ",\n"
-      << "  \"timed_trials\": " << timed_trials << ",\n"
+      << "  \"load_time_ms\": " << meta.load_time_ms << ",\n";
+  if (mpi_stats) {
+    const double phase = median_compute_ms + median_comm_ms;
+    const double share = (phase > 0.0) ? (median_comm_ms / phase) : 0.0;
+    out << "  \"distribution_time_ms\": " << meta.distribution_time_ms << ",\n"
+        << "  \"median_compute_ms\": " << median_compute_ms << ",\n"
+        << "  \"median_comm_ms\": " << median_comm_ms << ",\n"
+        << "  \"comm_share_of_phase\": " << share << ",\n"
+        << "  \"bytes_sent\": " << bytes_sent << ",\n";
+  }
+  out << "  \"timed_trials\": " << timed_trials << ",\n"
       << "  \"median_kernel_time_ms\": " << median_time_ms << ",\n"
       << "  \"min_kernel_time_ms\": " << min_time_ms << ",\n"
       << "  \"max_kernel_time_ms\": " << max_time_ms << ",\n"
       << "  \"num_components\": " << num_components << ",\n"
       << "  \"largest_component\": " << largest_component << ",\n"
-      << "  \"notes\": \"Kernel time excludes graph load/preprocess. "
-         "Serial union-find (path compression + union by rank). "
-         "On directed CSR, each arc is treated as undirected (WCC).\"\n"
+      << "  \"rounds\": " << rounds << ",\n"
+      << "  \"notes\": " << q(notes) << "\n"
       << "}\n";
 }
 

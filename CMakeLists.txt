@@ -13,7 +13,7 @@ option(PARGRAPH_BUILD_TOOLS "Build convert_graph and generate" ON)
 
 find_package(OpenMP)
 if(NOT OpenMP_CXX_FOUND)
-  message(FATAL_ERROR "OpenMP required for omp BFS (install libgomp / MSVC OpenMP)")
+  message(FATAL_ERROR "OpenMP required for omp BFS/CC (install libgomp / MSVC OpenMP)")
 endif()
 
 add_library(pargraph_core STATIC
@@ -23,6 +23,8 @@ add_library(pargraph_core STATIC
   src/bfs/omp_atomic.cpp
   src/bfs/omp_diropt.cpp
   src/cc/serial.cpp
+  src/cc/omp.cpp
+  src/cc/omp_atomic.cpp
   src/tc/serial.cpp
   src/tc/omp.cpp
   src/tc/omp_edge.cpp
@@ -39,37 +41,51 @@ else()
 endif()
 
 if(PARGRAPH_ENABLE_MPI)
-  set(PARGRAPH_MPI_ROOT "C:/msys64/ucrt64" CACHE PATH
-      "Prefix with mpi.h and libmsmpi (MSYS2 ucrt64 msmpi)")
-  find_path(PARGRAPH_MPI_INCLUDE mpi.h HINTS "${PARGRAPH_MPI_ROOT}/include")
-  find_library(PARGRAPH_MPI_LIB NAMES msmpi libmsmpi
-    HINTS "${PARGRAPH_MPI_ROOT}/lib")
-  if(NOT PARGRAPH_MPI_INCLUDE OR NOT PARGRAPH_MPI_LIB)
-    message(FATAL_ERROR
-      "PARGRAPH_ENABLE_MPI=ON but mpi.h / msmpi were not found under "
-      "${PARGRAPH_MPI_ROOT}. Install mingw-w64-ucrt-x86_64-msmpi.")
+  if(WIN32)
+    set(PARGRAPH_MPI_ROOT "C:/msys64/ucrt64" CACHE PATH
+        "Prefix with mpi.h and libmsmpi (MSYS2 ucrt64 msmpi)")
+    find_path(PARGRAPH_MPI_INCLUDE mpi.h HINTS "${PARGRAPH_MPI_ROOT}/include")
+    find_library(PARGRAPH_MPI_LIB NAMES msmpi libmsmpi
+      HINTS "${PARGRAPH_MPI_ROOT}/lib")
+    if(NOT PARGRAPH_MPI_INCLUDE OR NOT PARGRAPH_MPI_LIB)
+      message(FATAL_ERROR
+        "PARGRAPH_ENABLE_MPI=ON but mpi.h / msmpi were not found under "
+        "${PARGRAPH_MPI_ROOT}. Install mingw-w64-ucrt-x86_64-msmpi.")
+    endif()
+    add_library(pargraph_mpi INTERFACE)
+    target_include_directories(pargraph_mpi SYSTEM INTERFACE "${PARGRAPH_MPI_INCLUDE}")
+    target_link_libraries(pargraph_mpi INTERFACE "${PARGRAPH_MPI_LIB}")
+    target_compile_definitions(pargraph_mpi INTERFACE PARGRAPH_HAS_MPI=1)
+    find_program(PARGRAPH_MPIEXEC NAMES mpiexec
+      HINTS
+        "$ENV{MSMPI_BIN}"
+        "C:/Program Files/Microsoft MPI/Bin"
+        "C:/Program Files (x86)/Microsoft MPI/Bin")
+  else()
+    find_package(MPI REQUIRED)
+    add_library(pargraph_mpi INTERFACE)
+    target_link_libraries(pargraph_mpi INTERFACE MPI::MPI_CXX)
+    target_compile_definitions(pargraph_mpi INTERFACE PARGRAPH_HAS_MPI=1)
+    set(PARGRAPH_MPIEXEC "${MPIEXEC_EXECUTABLE}" CACHE FILEPATH "mpiexec")
   endif()
-  add_library(pargraph_mpi INTERFACE)
-  target_include_directories(pargraph_mpi SYSTEM INTERFACE "${PARGRAPH_MPI_INCLUDE}")
-  target_link_libraries(pargraph_mpi INTERFACE "${PARGRAPH_MPI_LIB}")
-  target_compile_definitions(pargraph_mpi INTERFACE PARGRAPH_HAS_MPI=1)
-  target_sources(pargraph_core PRIVATE src/bfs/mpi_atomic.cpp)
+  target_sources(pargraph_core PRIVATE
+    src/bfs/mpi_atomic.cpp
+    src/cc/mpi_atomic.cpp
+  )
   target_link_libraries(pargraph_core PUBLIC pargraph_mpi)
-  find_program(PARGRAPH_MPIEXEC NAMES mpiexec
-    HINTS
-      "$ENV{MSMPI_BIN}"
-      "C:/Program Files/Microsoft MPI/Bin"
-      "C:/Program Files (x86)/Microsoft MPI/Bin")
 endif()
 
-# Unified CLI driver (serial + OpenMP BFS, serial CC, optional MPI BFS).
+# Unified CLI driver (serial + OpenMP + optional MPI for BFS and CC).
 add_executable(pargraph src/main.cpp)
 target_link_libraries(pargraph PRIVATE pargraph_core)
 if(PARGRAPH_ENABLE_MPI)
   # The validation suite is also linked here. Windows code-integrity policy on
   # this machine blocks brand-new unsigned exe names, while pargraph.exe is
   # already allowed to launch. `pargraph --mpi-self-test` is that entry point.
-  target_sources(pargraph PRIVATE tests/test_bfs_mpi_atomic.cpp)
+  target_sources(pargraph PRIVATE
+    tests/test_bfs_mpi_atomic.cpp
+    tests/test_cc_mpi_atomic.cpp
+  )
   target_compile_definitions(pargraph PRIVATE
     PARGRAPH_EMBED_MPI_TEST
     PARGRAPH_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
@@ -131,14 +147,37 @@ if(PARGRAPH_BUILD_TESTS)
     target_compile_definitions(test_bfs_mpi_atomic PRIVATE
       PARGRAPH_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
     )
-    set(_mpi_path "C:/msys64/ucrt64/bin;C:/Program Files/Microsoft MPI/Bin;$ENV{PATH}")
+    add_executable(test_cc_mpi_atomic tests/test_cc_mpi_atomic.cpp)
+    target_link_libraries(test_cc_mpi_atomic PRIVATE pargraph_core)
+    target_compile_definitions(test_cc_mpi_atomic PRIVATE
+      PARGRAPH_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+    )
+
+    set(_mpi_extra_args "")
+    if(WIN32)
+      set(_mpi_path "C:/msys64/ucrt64/bin;C:/Program Files/Microsoft MPI/Bin;$ENV{PATH}")
+      set(_mpi_env "PATH=${_mpi_path}")
+    else()
+      # Single-node OpenMPI in CI/containers often has no ssh/rsh agent.
+      set(_mpi_extra_args --oversubscribe --mca plm_rsh_agent false)
+      set(_mpi_env "OMPI_MCA_btl=tcp,self")
+    endif()
+
     foreach(_np IN ITEMS 1 2 4 8)
       add_test(NAME bfs_mpi_atomic_np${_np}
-        COMMAND "${PARGRAPH_MPIEXEC}" -n ${_np}
+        COMMAND "${PARGRAPH_MPIEXEC}" ${_mpi_extra_args} -n ${_np}
                 $<TARGET_FILE:pargraph> --mpi-self-test)
       set_tests_properties(bfs_mpi_atomic_np${_np} PROPERTIES
         RUN_SERIAL TRUE
-        ENVIRONMENT "PATH=${_mpi_path}"
+        ENVIRONMENT "${_mpi_env}"
+        PROCESSORS ${_np})
+
+      add_test(NAME cc_mpi_atomic_np${_np}
+        COMMAND "${PARGRAPH_MPIEXEC}" ${_mpi_extra_args} -n ${_np}
+                $<TARGET_FILE:pargraph> --cc-mpi-self-test)
+      set_tests_properties(cc_mpi_atomic_np${_np} PROPERTIES
+        RUN_SERIAL TRUE
+        ENVIRONMENT "${_mpi_env}"
         PROCESSORS ${_np})
     endforeach()
   endif()
@@ -149,6 +188,20 @@ if(PARGRAPH_BUILD_TESTS)
     PARGRAPH_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
   )
   add_test(NAME cc_serial COMMAND test_cc_serial)
+
+  add_executable(test_cc_omp tests/test_cc_omp.cpp)
+  target_link_libraries(test_cc_omp PRIVATE pargraph_core)
+  target_compile_definitions(test_cc_omp PRIVATE
+    PARGRAPH_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+  )
+  add_test(NAME cc_omp COMMAND test_cc_omp)
+
+  add_executable(test_cc_omp_atomic tests/test_cc_omp_atomic.cpp)
+  target_link_libraries(test_cc_omp_atomic PRIVATE pargraph_core)
+  target_compile_definitions(test_cc_omp_atomic PRIVATE
+    PARGRAPH_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+  )
+  add_test(NAME cc_omp_atomic COMMAND test_cc_omp_atomic)
 
   add_executable(test_tc_serial tests/test_tc_serial.cpp)
   target_link_libraries(test_tc_serial PRIVATE pargraph_core)
@@ -172,5 +225,5 @@ if(PARGRAPH_BUILD_TESTS)
   add_test(NAME tc_omp_edge COMMAND test_tc_omp_edge)
 endif()
 
-message(STATUS "pargraph: serial+omp(+atomic,+diropt) BFS, serial CC, serial+omp(+edge) TC, optional MPI atomic BFS")
+message(STATUS "pargraph: serial+omp(+atomic,+diropt) BFS, serial+omp(+atomic) CC, serial+omp(+edge) TC, optional MPI atomic BFS/CC")
 message(STATUS "  CUDA=${PARGRAPH_ENABLE_CUDA} MPI=${PARGRAPH_ENABLE_MPI} OpenMP=ON")
