@@ -1,6 +1,6 @@
 {
-  "timestamp_utc": "2026-10-25T21:11:31Z",
-  "git_commit": "08a5912",
+  "timestamp_utc": "2026-10-26T05:21:28Z",
+  "git_commit": "217f330",
   "hostname": "ANKUSH_WOLFY",
   "os": "Windows",
   "cpu": "13th Gen Intel Core i7 (see README machine)",
@@ -19,9 +19,9 @@
   "trials": 2,
   "load_time_ms": 0,
   "timed_trials": 4,
-  "median_kernel_time_ms": 0.001,
-  "min_kernel_time_ms": 0.0008,
-  "max_kernel_time_ms": 0.0012,
-  "harmonic_mean_teps": 1.2e+07,
+  "median_kernel_time_ms": 0.0012,
+  "min_kernel_time_ms": 0.001,
+  "max_kernel_time_ms": 0.0013,
+  "harmonic_mean_teps": 1.02128e+07,
   "notes": "Kernel time excludes graph load/preprocess. TEPS = edges_examined / time_sec (Graph500-style)."
 }

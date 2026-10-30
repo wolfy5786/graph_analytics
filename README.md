@@ -437,21 +437,33 @@ Raw per-trial rows + metadata: [`results/lj_bfs_serial.csv`](results/lj_bfs_seri
 | Kernel | Graph | Variant | Setup | Median kernel (ms) | Harmonic-mean TEPS | Notes |
 |---|---|---|---|---|---|---|
 | BFS | LiveJournal (`data/livejournal.csr`) | serial | 8 random roots, seed=1, 1 warmup + 3 trials/root, `--validate` | 1241.73 | 5.19e7 | Directed CSR (V=4,847,571, E=68,475,391). Load ~152 ms. 6/8 roots reach ~4.40M verts / ~67.7M edges examined (~1.2–2.0 s); 2/8 roots have out-degree 0 (`visited=1`, ~24 ms init only). Commit `08a5912`. |
+| BFS | LiveJournal (`data/livejournal.csr`) | omp (no-atomic discovery + reduction-tree merge) | 14 threads, 8 random roots, seed=1, 1 warmup + 3 trials/root, `--validate` (Graph500 + exact dist vs serial) | 1527.88 | 4.39e7 | Same graph/roots as serial. Load ~126 ms. ≈ **0.81×** vs serial median (candidate sort/dedupe dominates on this power-law graph; post-fix rerun). Validated exact dist vs serial. See [`results/lj_bfs_omp.csv`](results/lj_bfs_omp.csv) + [`.meta.json`](results/lj_bfs_omp.csv.meta.json). |
+| BFS | LiveJournal (`data/livejournal.csr`) | omp_atomic (atomic visited TAS + thread-local next) | 14 threads, 8 random roots, seed=1, 1 warmup + 3 trials/root, `--validate` (Graph500 + exact dist vs serial) | 173.99 | 3.84e8 | Same graph/roots as serial. Load ~264 ms. Speedup ≈ **7.14×** vs serial median. Plain load before CAS reduces atomic traffic on already-visited neighbors. See [`results/lj_bfs_omp_atomic.csv`](results/lj_bfs_omp_atomic.csv) + [`.meta.json`](results/lj_bfs_omp_atomic.csv.meta.json). |
+| BFS | LiveJournal (`data/livejournal.csr`) | mpi_atomic (hybrid MPI + OpenMP, 1D vertex ownership, atomic TAS) | `mpiexec -n 2`, 7 threads/rank, 8 random roots, seed=1, 1 warmup + 3 trials/root, `--validate` (Graph500 + exact dist/edges vs serial) | 246.66 | 2.65e8 | Same graph/roots as serial. Load ~160 ms. 1D edge slice ~51 ms, excluded from kernel time. Speedup ≈ **5.03×** vs serial median. Slowest rank: median compute 192 ms, comm 38 ms (**16.7%** of that split, including MPI wait). Discovery payload ~22.8 MB/trial on the large roots. See [`results/lj_bfs_mpi_atomic.csv`](results/lj_bfs_mpi_atomic.csv) + [`.meta.json`](results/lj_bfs_mpi_atomic.csv.meta.json). |
+| CC | LiveJournal (`data/livejournal.csr`) | serial union-find | 1 warmup + 3 trials, `--validate` | 10457 | — | WCC via union over directed arcs (V=4,847,571, E=68,475,391). Load ~208 ms. **1876** components, largest **4,843,953**. Debug build, commit `217f330`. See [`results/lj_cc_serial.csv`](results/lj_cc_serial.csv) + [`.meta.json`](results/lj_cc_serial.csv.meta.json). |
 
 Sample-graph check (hand distances + tree/relaxation validate): [`results/bfs_sample_serial_cli.csv`](results/bfs_sample_serial_cli.csv).
 
+Sample omp BFS check (distances vs serial, 1–N threads): [`results/bfs_sample_omp.csv`](results/bfs_sample_omp.csv), CLI [`results/bfs_sample_omp_cli.csv`](results/bfs_sample_omp_cli.csv).
+
+Sample omp_atomic BFS check: [`results/bfs_sample_omp_atomic.csv`](results/bfs_sample_omp_atomic.csv), CLI [`results/bfs_sample_omp_atomic_cli.csv`](results/bfs_sample_omp_atomic_cli.csv).
+
+Sample mpi_atomic BFS check (1/2/4/8 ranks, including empty ranks): [`results/bfs_sample_mpi_atomic_np1.csv`](results/bfs_sample_mpi_atomic_np1.csv), [`results/bfs_sample_mpi_atomic_np2.csv`](results/bfs_sample_mpi_atomic_np2.csv), [`results/bfs_sample_mpi_atomic_np4.csv`](results/bfs_sample_mpi_atomic_np4.csv), [`results/bfs_sample_mpi_atomic_np8.csv`](results/bfs_sample_mpi_atomic_np8.csv). CLI (`mpiexec -n 2`): [`results/bfs_sample_mpi_atomic_cli.csv`](results/bfs_sample_mpi_atomic_cli.csv).
+
+Sample CC check (2 components, largest=4): [`results/cc_sample_serial_cli.csv`](results/cc_sample_serial_cli.csv), [`results/cc_sample_serial.csv`](results/cc_sample_serial.csv).
+
 **Speedup over serial baseline (higher is better)**
 
-| Kernel / Graph | omp | simd | cuda | mpi (N ranks) |
-|---|---|---|---|---|
-| BFS / LiveJournal | | | | |
-| BFS / USA road | | | | |
-| PageRank / LiveJournal | | | | |
-| PageRank / Kronecker-22 | | | | |
-| CC / Orkut | | | | |
-| CC / USA road | | | | |
-| TC / Orkut | | | | |
-| TC / Kronecker-22 | | | | |
+| Kernel / Graph | omp | omp_atomic | simd | cuda | mpi (N ranks) |
+|---|---|---|---|---|---|
+| BFS / LiveJournal | 0.81× | 7.14× | | | 5.03× (2 ranks × 7 threads) |
+| BFS / USA road | | | | | |
+| PageRank / LiveJournal | | | | | |
+| PageRank / Kronecker-22 | | | | | |
+| CC / Orkut | | | | | |
+| CC / USA road | | | | | |
+| TC / Orkut | | | | | |
+| TC / Kronecker-22 | | | | | |
 
 **Figures to produce** (all via `scripts/plot_results.py`)
 

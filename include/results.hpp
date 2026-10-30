@@ -29,7 +29,14 @@ struct RunMetadata {
   int sources = 0;
   int trials = 0;
   double load_time_ms = 0.0;  // preprocessing, separate from kernel
+  double distribution_time_ms = 0.0;  // MPI 1D slice, separate from kernel
+  std::string algo;           // e.g. unionfind for CC
 };
+
+inline bool reports_mpi_split(const RunMetadata& meta) {
+  return meta.ranks > 1 || meta.variant.rfind("mpi", 0) == 0 ||
+         meta.distribution_time_ms > 0.0;
+}
 
 struct BfsTrialRow {
   int source = 0;
@@ -41,6 +48,9 @@ struct BfsTrialRow {
   double teps = 0.0;
   bool validated = false;
   bool valid_ok = false;
+  double compute_ms = 0.0;
+  double comm_ms = 0.0;
+  std::uint64_t bytes_sent = 0;
 };
 
 inline std::string csv_escape(const std::string& s) {
@@ -67,11 +77,16 @@ inline void write_bfs_results_csv(const std::string& path,
     throw std::runtime_error("failed to write results CSV: " + path);
   }
 
+  const bool mpi_cols = reports_mpi_split(meta);
   out << "timestamp_utc,git_commit,hostname,os,cpu,compiler,build_type,"
          "kernel,variant,graph,num_vertices,num_edges,directed,"
          "threads,ranks,seed,sources_requested,trials_requested,load_time_ms,"
          "source,trial,is_warmup,time_ms,visited,edges_examined,teps,"
-         "validated,valid_ok\n";
+         "validated,valid_ok";
+  if (mpi_cols) {
+    out << ",compute_ms,comm_ms,bytes_sent";
+  }
+  out << "\n";
 
   for (const auto& r : rows) {
     out << csv_escape(meta.timestamp_utc) << ','
@@ -87,7 +102,11 @@ inline void write_bfs_results_csv(const std::string& path,
         << ',' << r.source << ',' << r.trial << ',' << (r.is_warmup ? 1 : 0)
         << ',' << r.time_ms << ',' << r.visited << ',' << r.edges_examined
         << ',' << r.teps << ',' << (r.validated ? 1 : 0) << ','
-        << (r.valid_ok ? 1 : 0) << '\n';
+        << (r.valid_ok ? 1 : 0);
+    if (mpi_cols) {
+      out << ',' << r.compute_ms << ',' << r.comm_ms << ',' << r.bytes_sent;
+    }
+    out << '\n';
   }
 }
 
@@ -97,7 +116,129 @@ inline void write_bfs_results_meta_json(const std::string& path,
                                         double min_time_ms,
                                         double max_time_ms,
                                         double harmonic_mean_teps,
-                                        std::uint64_t timed_trials) {
+                                        std::uint64_t timed_trials,
+                                        double median_compute_ms = 0.0,
+                                        double median_comm_ms = 0.0,
+                                        std::uint64_t bytes_sent = 0) {
+  std::ofstream out(path);
+  if (!out) {
+    throw std::runtime_error("failed to write results meta JSON: " + path);
+  }
+
+  auto q = [](const std::string& s) {
+    std::ostringstream o;
+    o << '"';
+    for (char c : s) {
+      if (c == '"' || c == '\\') {
+        o << '\\';
+      }
+      o << c;
+    }
+    o << '"';
+    return o.str();
+  };
+
+  const bool mpi_stats = reports_mpi_split(meta);
+  std::string notes =
+      "Kernel time excludes graph load/preprocess. "
+      "TEPS = edges_examined / time_sec (Graph500-style).";
+  if (mpi_stats) {
+    notes +=
+        " distribution_time_ms is the 1D edge slice and is excluded from "
+        "kernel time. compute_ms/comm_ms are the slowest rank's phase split "
+        "(comm includes wait inside MPI). bytes_sent sums discovery payloads "
+        "across ranks.";
+  }
+
+  out << "{\n"
+      << "  \"timestamp_utc\": " << q(meta.timestamp_utc) << ",\n"
+      << "  \"git_commit\": " << q(meta.git_commit) << ",\n"
+      << "  \"hostname\": " << q(meta.hostname) << ",\n"
+      << "  \"os\": " << q(meta.os) << ",\n"
+      << "  \"cpu\": " << q(meta.cpu) << ",\n"
+      << "  \"compiler\": " << q(meta.compiler) << ",\n"
+      << "  \"build_type\": " << q(meta.cmake_build_type) << ",\n"
+      << "  \"kernel\": " << q(meta.kernel) << ",\n"
+      << "  \"variant\": " << q(meta.variant) << ",\n"
+      << "  \"graph\": " << q(meta.graph_path) << ",\n"
+      << "  \"num_vertices\": " << meta.num_vertices << ",\n"
+      << "  \"num_edges\": " << meta.num_edges << ",\n"
+      << "  \"directed\": " << (meta.directed ? "true" : "false") << ",\n"
+      << "  \"threads\": " << meta.threads << ",\n"
+      << "  \"ranks\": " << meta.ranks << ",\n"
+      << "  \"seed\": " << meta.seed << ",\n"
+      << "  \"sources\": " << meta.sources << ",\n"
+      << "  \"trials\": " << meta.trials << ",\n"
+      << "  \"load_time_ms\": " << meta.load_time_ms << ",\n";
+  if (mpi_stats) {
+    const double phase = median_compute_ms + median_comm_ms;
+    const double share = (phase > 0.0) ? (median_comm_ms / phase) : 0.0;
+    out << "  \"distribution_time_ms\": " << meta.distribution_time_ms << ",\n"
+        << "  \"median_compute_ms\": " << median_compute_ms << ",\n"
+        << "  \"median_comm_ms\": " << median_comm_ms << ",\n"
+        << "  \"comm_share_of_phase\": " << share << ",\n"
+        << "  \"bytes_sent\": " << bytes_sent << ",\n";
+  }
+  out << "  \"timed_trials\": " << timed_trials << ",\n"
+      << "  \"median_kernel_time_ms\": " << median_time_ms << ",\n"
+      << "  \"min_kernel_time_ms\": " << min_time_ms << ",\n"
+      << "  \"max_kernel_time_ms\": " << max_time_ms << ",\n"
+      << "  \"harmonic_mean_teps\": " << harmonic_mean_teps << ",\n"
+      << "  \"notes\": " << q(notes) << "\n"
+      << "}\n";
+}
+
+struct CcTrialRow {
+  int trial = 0;  // -1 = warmup
+  bool is_warmup = false;
+  double time_ms = 0.0;
+  std::uint64_t num_components = 0;
+  std::uint64_t largest_component = 0;
+  std::uint64_t edges_united = 0;
+  bool validated = false;
+  bool valid_ok = false;
+};
+
+inline void write_cc_results_csv(const std::string& path,
+                                 const RunMetadata& meta,
+                                 const std::vector<CcTrialRow>& rows) {
+  std::ofstream out(path);
+  if (!out) {
+    throw std::runtime_error("failed to write results CSV: " + path);
+  }
+
+  out << "timestamp_utc,git_commit,hostname,os,cpu,compiler,build_type,"
+         "kernel,variant,algo,graph,num_vertices,num_edges,directed,"
+         "threads,ranks,seed,trials_requested,load_time_ms,"
+         "trial,is_warmup,time_ms,num_components,largest_component,"
+         "edges_united,validated,valid_ok\n";
+
+  for (const auto& r : rows) {
+    out << csv_escape(meta.timestamp_utc) << ','
+        << csv_escape(meta.git_commit) << ',' << csv_escape(meta.hostname)
+        << ',' << csv_escape(meta.os) << ',' << csv_escape(meta.cpu) << ','
+        << csv_escape(meta.compiler) << ','
+        << csv_escape(meta.cmake_build_type) << ','
+        << csv_escape(meta.kernel) << ',' << csv_escape(meta.variant) << ','
+        << csv_escape(meta.algo) << ',' << csv_escape(meta.graph_path) << ','
+        << meta.num_vertices << ',' << meta.num_edges << ','
+        << (meta.directed ? 1 : 0) << ',' << meta.threads << ',' << meta.ranks
+        << ',' << meta.seed << ',' << meta.trials << ',' << meta.load_time_ms
+        << ',' << r.trial << ',' << (r.is_warmup ? 1 : 0) << ',' << r.time_ms
+        << ',' << r.num_components << ',' << r.largest_component << ','
+        << r.edges_united << ',' << (r.validated ? 1 : 0) << ','
+        << (r.valid_ok ? 1 : 0) << '\n';
+  }
+}
+
+inline void write_cc_results_meta_json(const std::string& path,
+                                       const RunMetadata& meta,
+                                       double median_time_ms,
+                                       double min_time_ms,
+                                       double max_time_ms,
+                                       std::uint64_t num_components,
+                                       std::uint64_t largest_component,
+                                       std::uint64_t timed_trials) {
   std::ofstream out(path);
   if (!out) {
     throw std::runtime_error("failed to write results meta JSON: " + path);
@@ -126,6 +267,7 @@ inline void write_bfs_results_meta_json(const std::string& path,
       << "  \"build_type\": " << q(meta.cmake_build_type) << ",\n"
       << "  \"kernel\": " << q(meta.kernel) << ",\n"
       << "  \"variant\": " << q(meta.variant) << ",\n"
+      << "  \"algo\": " << q(meta.algo) << ",\n"
       << "  \"graph\": " << q(meta.graph_path) << ",\n"
       << "  \"num_vertices\": " << meta.num_vertices << ",\n"
       << "  \"num_edges\": " << meta.num_edges << ",\n"
@@ -133,16 +275,17 @@ inline void write_bfs_results_meta_json(const std::string& path,
       << "  \"threads\": " << meta.threads << ",\n"
       << "  \"ranks\": " << meta.ranks << ",\n"
       << "  \"seed\": " << meta.seed << ",\n"
-      << "  \"sources\": " << meta.sources << ",\n"
       << "  \"trials\": " << meta.trials << ",\n"
       << "  \"load_time_ms\": " << meta.load_time_ms << ",\n"
       << "  \"timed_trials\": " << timed_trials << ",\n"
       << "  \"median_kernel_time_ms\": " << median_time_ms << ",\n"
       << "  \"min_kernel_time_ms\": " << min_time_ms << ",\n"
       << "  \"max_kernel_time_ms\": " << max_time_ms << ",\n"
-      << "  \"harmonic_mean_teps\": " << harmonic_mean_teps << ",\n"
+      << "  \"num_components\": " << num_components << ",\n"
+      << "  \"largest_component\": " << largest_component << ",\n"
       << "  \"notes\": \"Kernel time excludes graph load/preprocess. "
-         "TEPS = edges_examined / time_sec (Graph500-style).\"\n"
+         "Serial union-find (path compression + union by rank). "
+         "On directed CSR, each arc is treated as undirected (WCC).\"\n"
       << "}\n";
 }
 

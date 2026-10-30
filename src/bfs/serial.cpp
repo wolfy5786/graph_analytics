@@ -1,5 +1,6 @@
 #include "kernels.hpp"
 
+#include <algorithm>
 #include <queue>
 #include <string>
 
@@ -88,6 +89,16 @@ BfsValidation validate_bfs(const Graph& g, vtx_t source, const BfsResult& r) {
     if (r.dist[static_cast<std::size_t>(p)] != d - 1) {
       err("parent not exactly one level closer at vertex " +
           std::to_string(v));
+      return out;
+    }
+    const auto parent_v = static_cast<vtx_t>(p);
+    const auto* nb = g.neighbors_begin(parent_v);
+    const auto* ne = g.neighbors_end(parent_v);
+    const auto want = static_cast<vtx_t>(v);
+    const bool linked = g.sorted ? std::binary_search(nb, ne, want)
+                                 : std::find(nb, ne, want) != ne;
+    if (!linked) {
+      err("parent has no stored edge to vertex " + std::to_string(v));
       return out;
     }
   }
