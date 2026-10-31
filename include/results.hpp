@@ -30,7 +30,10 @@ struct RunMetadata {
   int trials = 0;
   double load_time_ms = 0.0;  // preprocessing, separate from kernel
   double distribution_time_ms = 0.0;  // MPI 1D slice, separate from kernel
+  double orient_time_ms = 0.0;  // TC orientation, separate from kernel
   std::string algo;           // e.g. unionfind for CC
+  std::string orient;         // TC: degree|id
+  std::string intersect;      // TC: merge|galloping
 };
 
 inline bool reports_mpi_split(const RunMetadata& meta) {
@@ -286,6 +289,112 @@ inline void write_cc_results_meta_json(const std::string& path,
       << "  \"notes\": \"Kernel time excludes graph load/preprocess. "
          "Serial union-find (path compression + union by rank). "
          "On directed CSR, each arc is treated as undirected (WCC).\"\n"
+      << "}\n";
+}
+
+struct TcTrialRow {
+  int trial = 0;  // -1 = warmup
+  bool is_warmup = false;
+  double time_ms = 0.0;
+  std::uint64_t triangles = 0;
+  std::uint64_t wedges_examined = 0;
+  std::uint64_t intersect_ops = 0;
+  double intersect_rate = 0.0;  // intersect_ops / time_sec
+  bool validated = false;
+  bool valid_ok = false;
+};
+
+inline void write_tc_results_csv(const std::string& path,
+                                 const RunMetadata& meta,
+                                 const std::vector<TcTrialRow>& rows) {
+  std::ofstream out(path);
+  if (!out) {
+    throw std::runtime_error("failed to write results CSV: " + path);
+  }
+
+  out << "timestamp_utc,git_commit,hostname,os,cpu,compiler,build_type,"
+         "kernel,variant,orient,intersect,graph,num_vertices,num_edges,"
+         "directed,threads,ranks,seed,trials_requested,load_time_ms,"
+         "orient_time_ms,trial,is_warmup,time_ms,triangles,wedges_examined,"
+         "intersect_ops,intersect_rate,validated,valid_ok\n";
+
+  for (const auto& r : rows) {
+    out << csv_escape(meta.timestamp_utc) << ','
+        << csv_escape(meta.git_commit) << ',' << csv_escape(meta.hostname)
+        << ',' << csv_escape(meta.os) << ',' << csv_escape(meta.cpu) << ','
+        << csv_escape(meta.compiler) << ','
+        << csv_escape(meta.cmake_build_type) << ','
+        << csv_escape(meta.kernel) << ',' << csv_escape(meta.variant) << ','
+        << csv_escape(meta.orient) << ',' << csv_escape(meta.intersect) << ','
+        << csv_escape(meta.graph_path) << ',' << meta.num_vertices << ','
+        << meta.num_edges << ',' << (meta.directed ? 1 : 0) << ','
+        << meta.threads << ',' << meta.ranks << ',' << meta.seed << ','
+        << meta.trials << ',' << meta.load_time_ms << ','
+        << meta.orient_time_ms << ',' << r.trial << ','
+        << (r.is_warmup ? 1 : 0) << ',' << r.time_ms << ',' << r.triangles
+        << ',' << r.wedges_examined << ',' << r.intersect_ops << ','
+        << r.intersect_rate << ',' << (r.validated ? 1 : 0) << ','
+        << (r.valid_ok ? 1 : 0) << '\n';
+  }
+}
+
+inline void write_tc_results_meta_json(const std::string& path,
+                                       const RunMetadata& meta,
+                                       double median_time_ms,
+                                       double min_time_ms,
+                                       double max_time_ms,
+                                       std::uint64_t triangles,
+                                       double median_intersect_rate,
+                                       std::uint64_t timed_trials) {
+  std::ofstream out(path);
+  if (!out) {
+    throw std::runtime_error("failed to write results meta JSON: " + path);
+  }
+
+  auto q = [](const std::string& s) {
+    std::ostringstream o;
+    o << '"';
+    for (char c : s) {
+      if (c == '"' || c == '\\') {
+        o << '\\';
+      }
+      o << c;
+    }
+    o << '"';
+    return o.str();
+  };
+
+  out << "{\n"
+      << "  \"timestamp_utc\": " << q(meta.timestamp_utc) << ",\n"
+      << "  \"git_commit\": " << q(meta.git_commit) << ",\n"
+      << "  \"hostname\": " << q(meta.hostname) << ",\n"
+      << "  \"os\": " << q(meta.os) << ",\n"
+      << "  \"cpu\": " << q(meta.cpu) << ",\n"
+      << "  \"compiler\": " << q(meta.compiler) << ",\n"
+      << "  \"build_type\": " << q(meta.cmake_build_type) << ",\n"
+      << "  \"kernel\": " << q(meta.kernel) << ",\n"
+      << "  \"variant\": " << q(meta.variant) << ",\n"
+      << "  \"orient\": " << q(meta.orient) << ",\n"
+      << "  \"intersect\": " << q(meta.intersect) << ",\n"
+      << "  \"graph\": " << q(meta.graph_path) << ",\n"
+      << "  \"num_vertices\": " << meta.num_vertices << ",\n"
+      << "  \"num_edges\": " << meta.num_edges << ",\n"
+      << "  \"directed\": " << (meta.directed ? "true" : "false") << ",\n"
+      << "  \"threads\": " << meta.threads << ",\n"
+      << "  \"ranks\": " << meta.ranks << ",\n"
+      << "  \"seed\": " << meta.seed << ",\n"
+      << "  \"trials\": " << meta.trials << ",\n"
+      << "  \"load_time_ms\": " << meta.load_time_ms << ",\n"
+      << "  \"orient_time_ms\": " << meta.orient_time_ms << ",\n"
+      << "  \"timed_trials\": " << timed_trials << ",\n"
+      << "  \"median_kernel_time_ms\": " << median_time_ms << ",\n"
+      << "  \"min_kernel_time_ms\": " << min_time_ms << ",\n"
+      << "  \"max_kernel_time_ms\": " << max_time_ms << ",\n"
+      << "  \"triangles\": " << triangles << ",\n"
+      << "  \"median_intersect_rate\": " << median_intersect_rate << ",\n"
+      << "  \"notes\": \"Kernel time excludes graph load and orientation. "
+         "intersect_rate = intersect_ops / time_sec. Forward algorithm: "
+         "orient edges by degree/id, intersect sorted forward adjacency.\"\n"
       << "}\n";
 }
 

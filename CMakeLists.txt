@@ -22,6 +22,9 @@ add_library(pargraph_core STATIC
   src/bfs/omp.cpp
   src/bfs/omp_atomic.cpp
   src/cc/serial.cpp
+  src/tc/serial.cpp
+  src/tc/omp.cpp
+  src/tc/omp_edge.cpp
 )
 target_include_directories(pargraph_core PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -132,7 +135,28 @@ if(PARGRAPH_BUILD_TESTS)
     PARGRAPH_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
   )
   add_test(NAME cc_serial COMMAND test_cc_serial)
+
+  add_executable(test_tc_serial tests/test_tc_serial.cpp)
+  target_link_libraries(test_tc_serial PRIVATE pargraph_core)
+  target_compile_definitions(test_tc_serial PRIVATE
+    PARGRAPH_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+  )
+  add_test(NAME tc_serial COMMAND test_tc_serial)
+
+  add_executable(test_tc_omp tests/test_tc_omp.cpp)
+  target_link_libraries(test_tc_omp PRIVATE pargraph_core)
+  target_compile_definitions(test_tc_omp PRIVATE
+    PARGRAPH_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+  )
+  add_test(NAME tc_omp COMMAND test_tc_omp)
+
+  add_executable(test_tc_omp_edge tests/test_tc_omp_edge.cpp)
+  target_link_libraries(test_tc_omp_edge PRIVATE pargraph_core)
+  target_compile_definitions(test_tc_omp_edge PRIVATE
+    PARGRAPH_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+  )
+  add_test(NAME tc_omp_edge COMMAND test_tc_omp_edge)
 endif()
 
-message(STATUS "pargraph: serial+omp(+atomic) BFS, serial CC, optional MPI atomic BFS")
+message(STATUS "pargraph: serial+omp(+atomic) BFS, serial CC, serial+omp(+edge) TC, optional MPI atomic BFS")
 message(STATUS "  CUDA=${PARGRAPH_ENABLE_CUDA} MPI=${PARGRAPH_ENABLE_MPI} OpenMP=ON")
