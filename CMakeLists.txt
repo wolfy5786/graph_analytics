@@ -28,6 +28,9 @@ add_library(pargraph_core STATIC
   src/tc/serial.cpp
   src/tc/omp.cpp
   src/tc/omp_edge.cpp
+  src/pagerank/serial.cpp
+  src/pagerank/omp.cpp
+  src/pagerank/omp_atomic.cpp
 )
 target_include_directories(pargraph_core PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -71,11 +74,12 @@ if(PARGRAPH_ENABLE_MPI)
   target_sources(pargraph_core PRIVATE
     src/bfs/mpi_atomic.cpp
     src/cc/mpi_atomic.cpp
+    src/pagerank/mpi.cpp
   )
   target_link_libraries(pargraph_core PUBLIC pargraph_mpi)
 endif()
 
-# Unified CLI driver (serial + OpenMP + optional MPI for BFS and CC).
+# Unified CLI driver (BFS, CC, TC, PageRank; optional MPI variants).
 add_executable(pargraph src/main.cpp)
 target_link_libraries(pargraph PRIVATE pargraph_core)
 if(PARGRAPH_ENABLE_MPI)
@@ -223,7 +227,28 @@ if(PARGRAPH_BUILD_TESTS)
     PARGRAPH_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
   )
   add_test(NAME tc_omp_edge COMMAND test_tc_omp_edge)
+
+  add_executable(test_pagerank_serial tests/test_pagerank_serial.cpp)
+  target_link_libraries(test_pagerank_serial PRIVATE pargraph_core)
+  target_compile_definitions(test_pagerank_serial PRIVATE
+    PARGRAPH_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+  )
+  add_test(NAME pagerank_serial COMMAND test_pagerank_serial)
+
+  add_executable(test_pagerank_omp tests/test_pagerank_omp.cpp)
+  target_link_libraries(test_pagerank_omp PRIVATE pargraph_core)
+  target_compile_definitions(test_pagerank_omp PRIVATE
+    PARGRAPH_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+  )
+  add_test(NAME pagerank_omp COMMAND test_pagerank_omp)
+
+  add_executable(test_pagerank_omp_atomic tests/test_pagerank_omp_atomic.cpp)
+  target_link_libraries(test_pagerank_omp_atomic PRIVATE pargraph_core)
+  target_compile_definitions(test_pagerank_omp_atomic PRIVATE
+    PARGRAPH_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+  )
+  add_test(NAME pagerank_omp_atomic COMMAND test_pagerank_omp_atomic)
 endif()
 
-message(STATUS "pargraph: serial+omp(+atomic,+diropt) BFS, serial+omp(+atomic) CC, serial+omp(+edge) TC, optional MPI atomic BFS/CC")
+message(STATUS "pargraph: serial+omp(+atomic,+diropt) BFS, serial+omp(+atomic) CC, serial+omp(+edge) TC, serial+omp(+atomic) PageRank, optional MPI")
 message(STATUS "  CUDA=${PARGRAPH_ENABLE_CUDA} MPI=${PARGRAPH_ENABLE_MPI} OpenMP=ON")

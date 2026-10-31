@@ -1,0 +1,4 @@
+timestamp_utc,git_commit,hostname,os,cpu,compiler,build_type,kernel,variant,graph,num_vertices,num_edges,directed,threads,ranks,seed,trials_requested,load_time_ms,damping,tolerance,max_iters,trial,is_warmup,time_ms,iterations,residual_l1,score_sum,edges_examined,ms_per_iter,validated,valid_ok
+2026-10-30T21:48:37Z,7a2eb80,cursor,Linux,unknown,GCC,Release,pagerank,serial,/workspace/tests/tiny_graphs/pagerank_sample.csr,5,6,1,1,1,1,2,0.048403,0.85,1e-06,100,-1,1,0.002595,56,8.68742e-07,1,336,4.63393e-05,1,1
+2026-10-30T21:48:37Z,7a2eb80,cursor,Linux,unknown,GCC,Release,pagerank,serial,/workspace/tests/tiny_graphs/pagerank_sample.csr,5,6,1,1,1,1,2,0.048403,0.85,1e-06,100,0,0,0.00087,56,8.68742e-07,1,336,1.55357e-05,1,1
+2026-10-30T21:48:37Z,7a2eb80,cursor,Linux,unknown,GCC,Release,pagerank,serial,/workspace/tests/tiny_graphs/pagerank_sample.csr,5,6,1,1,1,1,2,0.048403,0.85,1e-06,100,1,0,0.000921,56,8.68742e-07,1,336,1.64464e-05,1,1

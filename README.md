@@ -451,6 +451,9 @@ Raw per-trial rows + metadata: [`results/lj_bfs_serial.csv`](results/lj_bfs_seri
 | TC | Synth-5k (`tests/tiny_graphs/tc_synth_5k.csr`) | serial forward (degree orient, merge) | 1 warmup + 5 trials, `--validate` | 2.691 | — | Undirected (V=5000, E=89658), **6924** triangles. Orient ~0.91 ms (excluded). Median intersect rate ≈ 1.67e7 ops/s. See [`results/tc_synth5k_serial.csv`](results/tc_synth5k_serial.csv). |
 | TC | Synth-5k | omp (vertex-parallel, dynamic) | 4 threads, degree+merge, `--validate` | 0.825 | — | Speedup ≈ **3.26×** vs serial. See [`results/tc_synth5k_omp_t4.csv`](results/tc_synth5k_omp_t4.csv). |
 | TC | Synth-5k | omp_edge (edge-parallel + flatten) | 4 threads, degree+merge, `--validate` | 1.057 | — | Speedup ≈ **2.55×** vs serial; flatten cost loses to vertex-parallel on this graph. See [`results/tc_synth5k_omp_edge_t4.csv`](results/tc_synth5k_omp_edge_t4.csv). |
+| PageRank | Synthetic PA (`data/synth_pa50k.csr`) | serial (pull) | damping=0.85, tol=1e-6, max_iters=100, 1 warmup + 5 trials, `--validate` | 9.13 | — | Directed CSR (V=50,000, E=500,000). Reverse CSR ~44 ms (excluded). 12 iters. See [`results/synth_pa50k_pagerank_serial.csv`](results/synth_pa50k_pagerank_serial.csv). Design notes: [`docs/pagerank.md`](docs/pagerank.md). |
+| PageRank | Synthetic PA (`data/synth_pa50k.csr`) | omp (pull, no atomics) | 4 threads, same params/validate as serial | 6.10 | — | Speedup ≈ **1.50×** vs serial median. Exact match vs serial pull. See [`results/synth_pa50k_pagerank_omp.csv`](results/synth_pa50k_pagerank_omp.csv). |
+| PageRank | Synthetic PA (`data/synth_pa50k.csr`) | omp_atomic (push + atomic adds) | 4 threads, same params/validate as serial | 25.32 | — | ≈ **0.36×** vs serial (atomic contention on hubs). Validated vs serial within MAE/L∞ 1e-3. See [`results/synth_pa50k_pagerank_omp_atomic.csv`](results/synth_pa50k_pagerank_omp_atomic.csv). |
 
 Sample-graph check (hand distances + tree/relaxation validate): [`results/bfs_sample_serial_cli.csv`](results/bfs_sample_serial_cli.csv).
 
@@ -471,6 +474,7 @@ Sample omp_atomic CC (labelprop / sv / afforest): [`results/cc_sample_omp_atomic
 Sample mpi_atomic CC (1/2/4/8 ranks): [`results/cc_sample_mpi_atomic_np1.csv`](results/cc_sample_mpi_atomic_np1.csv) … [`np8`](results/cc_sample_mpi_atomic_np8.csv). CLI (`mpiexec -n 2`): [`results/cc_sample_mpi_atomic_cli.csv`](results/cc_sample_mpi_atomic_cli.csv).
 
 Sample TC check (6 triangles): [`results/tc_sample_serial.csv`](results/tc_sample_serial.csv), [`results/tc_sample_omp.csv`](results/tc_sample_omp.csv), [`results/tc_sample_omp_edge.csv`](results/tc_sample_omp_edge.csv); CLI [`results/tc_sample_serial_cli.csv`](results/tc_sample_serial_cli.csv). Design notes: [`docs/tc-parallel-design.md`](docs/tc-parallel-design.md).
+Sample PageRank check (hand scores + sum≈1): [`results/pagerank_sample_serial.csv`](results/pagerank_sample_serial.csv), CLI [`results/pagerank_sample_serial_cli.csv`](results/pagerank_sample_serial_cli.csv). Pull omp: [`results/pagerank_sample_omp.csv`](results/pagerank_sample_omp.csv), CLI [`results/pagerank_sample_omp_cli.csv`](results/pagerank_sample_omp_cli.csv). Push omp_atomic: [`results/pagerank_sample_omp_atomic.csv`](results/pagerank_sample_omp_atomic.csv), CLI [`results/pagerank_sample_omp_atomic_cli.csv`](results/pagerank_sample_omp_atomic_cli.csv).
 
 **Speedup over serial baseline (higher is better)**
 
@@ -479,6 +483,7 @@ Sample TC check (6 triangles): [`results/tc_sample_serial.csv`](results/tc_sampl
 | BFS / LiveJournal | 0.81× | 7.14× (omp_atomic) | | | 5.03× (2 ranks × 7 threads) |
 | BFS / BA-50k (synth, 4 thr) | 0.16× | 1.10× | | | | see also `omp_diropt` **2.06×** in [`docs/bfs-parallel.md`](docs/bfs-parallel.md) |
 | BFS / USA road | | | | | |
+| PageRank / synth_pa50k | 1.50× (pull) | 0.36× (push) | | | |
 | PageRank / LiveJournal | | | | | |
 | PageRank / Kronecker-22 | | | | | |
 | CC / wiki-Vote | 0.005× | 1.11× (labelprop) | | | 0.48× (2 ranks × 2 threads) |
@@ -507,7 +512,7 @@ Sample TC check (6 triangles): [`results/tc_sample_serial.csv`](results/tc_sampl
 
 **BFS.** Level-synchronous. Shared-memory designs: `omp` (no-atomic candidate merge), `omp_atomic` (TAS + thread-local next), `omp_diropt` (Beamer/GAPBS top-down ↔ bottom-up with bitmap frontier; `--alpha`/`--beta`/`--per-level`). Hybrid: `mpi_atomic` (1D ownership). Full write-up of designs, alternatives, and microbench tables: [`docs/bfs-parallel.md`](docs/bfs-parallel.md).
 
-**PageRank.** Pull-based formulation: each vertex sums contributions from its in-neighbors, so each output is written by one thread and no atomics are needed. Memory-bandwidth-bound; compare against the bandwidth roofline. Handle dangling vertices explicitly.
+**PageRank.** Pull-based formulation: each vertex sums contributions from its in-neighbors, so each output is written by one thread and no atomics are needed (`--variant omp`). Push + atomic adds (`omp_atomic`) is implemented as a contrast and loses on hub-heavy graphs. Optional hybrid MPI pull (`--variant mpi`) uses 1D ownership + Allgatherv. Memory-bandwidth-bound; compare against the bandwidth roofline. Handle dangling vertices explicitly. Full design write-up: [`docs/pagerank.md`](docs/pagerank.md).
 
 **Connected Components.** Parallel designs documented and benchmarked in [`docs/cc-parallel.md`](docs/cc-parallel.md): no-atomic OpenMP (BFS-`omp` twin with undirected hook proposals + reduction-tree merge), `atomicMin` label propagation, Shiloach–Vishkin, Afforest (exact finish), and hybrid MPI+OpenMP Allreduce-MIN. Serial union-find remains the oracle. Report rounds to convergence; compare partitions, not raw label ids.
 

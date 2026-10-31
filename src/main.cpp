@@ -39,15 +39,15 @@ void usage(const char* argv0) {
   }
   std::cerr
       << "Usage: " << argv0
-      << " --kernel <bfs|cc|tc> --variant <serial|omp|omp_atomic|omp_diropt|"
-         "omp_edge|mpi_atomic>"
+      << " --kernel <bfs|cc|tc|pagerank> --variant <serial|omp|omp_atomic|"
+         "omp_diropt|omp_edge|mpi_atomic|mpi>"
       << " --graph <path.csr> [options]\n"
       << "Options:\n"
       << "  --sources <n>     random BFS roots (default 1)\n"
       << "  --seed <n>        RNG seed for sources (default 1)\n"
       << "  --trials <n>      timed trials after warmup (default 1)\n"
       << "  --threads <n>     OpenMP threads per process (default: all cores;\n"
-      << "                    mpi_atomic default is cores/ranks)\n"
+      << "                    mpi* default is cores/ranks)\n"
       << "  --alpha <n>       diropt growing threshold (default 15)\n"
       << "  --beta <n>        diropt shrinking threshold (default 18)\n"
       << "  --per-level       record per-level frontier/time (omp_diropt)\n"
@@ -59,9 +59,13 @@ void usage(const char* argv0) {
       << "                    sv|afforest (omp_atomic only)\n"
       << "  --orient <degree|id>          TC edge orientation (default degree)\n"
       << "  --intersect <merge|galloping> TC set intersection (default merge)\n"
+      << "  --damping <f>     PageRank damping (default 0.85)\n"
+      << "  --tolerance <f>   PageRank L1 stop (default 1e-6)\n"
+      << "  --max-iters <n>   PageRank iteration cap (default 100)\n"
       << "TC variants: serial | omp (vertex-parallel) | omp_edge "
          "(edge-parallel).\n"
-      << "mpi_atomic is hybrid MPI+OpenMP. Launch with mpiexec -n <ranks>.\n";
+      << "PageRank variants: serial|omp (pull), omp_atomic (push), mpi (pull).\n"
+      << "mpi / mpi_atomic are hybrid MPI+OpenMP. Launch with mpiexec -n <ranks>.\n";
 }
 
 pargraph::TcOrientMode parse_orient(const std::string& s) {
@@ -656,6 +660,202 @@ int run_tc(const pargraph::Graph& g, pargraph::RunMetadata& meta, int trials,
   return 0;
 }
 
+pargraph::PageRankResult run_pagerank_variant(
+    const pargraph::Graph& out_g, const pargraph::Graph& in_g,
+    const std::string& variant, const pargraph::PageRankParams& params,
+    int threads, const pargraph::MpiVertexPart* part) {
+  if (variant == "omp") {
+    return pargraph::pagerank_omp(out_g, in_g, params, threads);
+  }
+  if (variant == "omp_atomic") {
+    return pargraph::pagerank_omp_atomic(out_g, params, threads);
+  }
+#ifdef PARGRAPH_HAS_MPI
+  if (variant == "mpi" || variant == "mpi_atomic") {
+    return pargraph::pagerank_mpi(*part, out_g, in_g, params, threads);
+  }
+#else
+  (void)part;
+#endif
+  return pargraph::pagerank_serial(out_g, in_g, params);
+}
+
+int run_pagerank(const pargraph::Graph& out_g, const pargraph::Graph& in_g,
+                 pargraph::RunMetadata& meta, int trials, bool do_validate,
+                 const std::string& output_path,
+                 const pargraph::MpiVertexPart* part) {
+  pargraph::PageRankParams params;
+  params.damping = meta.damping;
+  params.tolerance = meta.tolerance;
+  params.max_iters = meta.max_iters;
+
+  std::vector<pargraph::PageRankTrialRow> rows;
+  std::vector<double> timed_ms;
+  std::vector<double> timed_ms_per_iter;
+  std::vector<double> timed_compute;
+  std::vector<double> timed_comm;
+  std::uint64_t bytes_sum = 0;
+  int last_iters = 0;
+  double last_residual = 0.0;
+  const bool mpi_run = meta.variant == "mpi" || meta.variant == "mpi_atomic";
+
+  auto record = [&](int trial, bool warmup, const pargraph::Timer& t,
+                    const pargraph::PageRankResult& result, bool valid_ok) {
+    if (g_rank != 0) {
+      return;
+    }
+    pargraph::PageRankTrialRow row;
+    row.trial = trial;
+    row.is_warmup = warmup;
+    row.time_ms = t.elapsed_ms();
+    row.iterations = result.iterations;
+    row.residual_l1 = result.residual_l1;
+    row.score_sum = result.score_sum;
+    row.edges_examined = result.edges_examined;
+    row.ms_per_iter =
+        (result.iterations > 0) ? row.time_ms / result.iterations : 0.0;
+    row.validated = do_validate;
+    row.valid_ok = do_validate && valid_ok;
+    row.compute_ms = result.mpi.compute_sec * 1e3;
+    row.comm_ms = result.mpi.comm_sec * 1e3;
+    row.bytes_sent = result.mpi.bytes_sent;
+    rows.push_back(row);
+    if (!warmup) {
+      timed_ms.push_back(row.time_ms);
+      timed_ms_per_iter.push_back(row.ms_per_iter);
+      timed_compute.push_back(row.compute_ms);
+      timed_comm.push_back(row.comm_ms);
+      bytes_sum += row.bytes_sent;
+      last_iters = row.iterations;
+      last_residual = row.residual_l1;
+      std::cout << "PageRank trial=" << trial << " time_ms=" << row.time_ms
+                << " iters=" << row.iterations
+                << " residual_l1=" << row.residual_l1
+                << " ms_per_iter=" << row.ms_per_iter
+                << " score_sum=" << row.score_sum;
+      if (mpi_run) {
+        std::cout << " compute_ms=" << row.compute_ms
+                  << " comm_ms=" << row.comm_ms
+                  << " bytes_sent=" << row.bytes_sent;
+      }
+      std::cout << "\n";
+      std::cout.flush();
+    }
+  };
+
+  auto check_result = [&](int trial, const pargraph::PageRankResult& result,
+                          bool& ok) -> int {
+    ok = true;
+    int bad = 0;
+    if (g_rank == 0 && do_validate) {
+      const pargraph::PageRankResult* ref = nullptr;
+      pargraph::PageRankResult serial;
+      if (meta.variant != "serial") {
+        serial = pargraph::pagerank_serial(out_g, in_g, params);
+        ref = &serial;
+      }
+      // Push (omp_atomic) reorders floating-point adds across threads; allow
+      // a looser per-score / MAE bound than bit-stable pull.
+      const double score_tol =
+          (meta.variant == "omp_atomic") ? 1e-3 : 1e-9;
+      const auto vr =
+          pargraph::validate_pagerank(out_g, result, params, ref, score_tol);
+      ok = vr.ok;
+      if (!vr.ok) {
+        std::cerr << "PageRank validate failed trial=" << trial << ":\n";
+        for (const auto& e : vr.errors) {
+          std::cerr << "  - " << e << "\n";
+        }
+        bad = 1;
+      }
+    }
+#ifdef PARGRAPH_HAS_MPI
+    if (mpi_run) {
+      bad = mpi_agree(bad);
+    }
+#endif
+    return bad;
+  };
+
+  {
+#ifdef PARGRAPH_HAS_MPI
+    if (mpi_run) {
+      mpi_barrier();
+    }
+#endif
+    pargraph::Timer t;
+    t.start();
+    pargraph::PageRankResult warm =
+        run_pagerank_variant(out_g, in_g, meta.variant, params, meta.threads,
+                             part);
+    t.stop();
+    bool ok = true;
+    if (check_result(-1, warm, ok) != 0) {
+      return 1;
+    }
+    record(-1, true, t, warm, ok);
+  }
+
+  for (int trial = 0; trial < trials; ++trial) {
+#ifdef PARGRAPH_HAS_MPI
+    if (mpi_run) {
+      mpi_barrier();
+    }
+#endif
+    pargraph::Timer t;
+    t.start();
+    pargraph::PageRankResult result =
+        run_pagerank_variant(out_g, in_g, meta.variant, params, meta.threads,
+                             part);
+    t.stop();
+    bool ok = true;
+    if (check_result(trial, result, ok) != 0) {
+      return 1;
+    }
+    record(trial, false, t, result, ok);
+  }
+
+  if (g_rank != 0) {
+    return 0;
+  }
+
+  double min_ms = timed_ms.empty()
+                      ? 0.0
+                      : *std::min_element(timed_ms.begin(), timed_ms.end());
+  double max_ms = timed_ms.empty()
+                      ? 0.0
+                      : *std::max_element(timed_ms.begin(), timed_ms.end());
+  const double med_ms = pargraph::median_sorted(timed_ms);
+  const double med_mpi = pargraph::median_sorted(timed_ms_per_iter);
+  const double med_compute = pargraph::median_sorted(timed_compute);
+  const double med_comm = pargraph::median_sorted(timed_comm);
+
+  std::cout << "Summary (excl. warmup): median_ms=" << med_ms
+            << " min_ms=" << min_ms << " max_ms=" << max_ms
+            << " median_ms_per_iter=" << med_mpi << " iters=" << last_iters
+            << " residual_l1=" << last_residual;
+  if (mpi_run) {
+    const double phase = med_compute + med_comm;
+    const double share = phase > 0.0 ? med_comm / phase : 0.0;
+    std::cout << " median_compute_ms=" << med_compute
+              << " median_comm_ms=" << med_comm << " comm_share=" << share
+              << " bytes_sent=" << bytes_sum
+              << " distribution_ms=" << meta.distribution_time_ms;
+  }
+  std::cout << "\n";
+
+  if (!output_path.empty()) {
+    pargraph::write_pagerank_results_csv(output_path, meta, rows);
+    const std::string meta_path = output_path + ".meta.json";
+    pargraph::write_pagerank_results_meta_json(
+        meta_path, meta, med_ms, min_ms, max_ms, med_mpi, last_iters,
+        last_residual, timed_ms.size(), med_compute, med_comm, bytes_sum);
+    std::cout << "Wrote " << output_path << " and " << meta_path << "\n";
+  }
+
+  return 0;
+}
+
 }  // namespace
 
 int driver(int argc, char** argv) {
@@ -676,6 +876,9 @@ int driver(int argc, char** argv) {
   bool do_validate = false;
   bool has_fixed_source = false;
   pargraph::vtx_t fixed_source = 0;
+  double damping = 0.85;
+  double tolerance = 1e-6;
+  int max_iters = 100;
 
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
@@ -716,6 +919,12 @@ int driver(int argc, char** argv) {
       beta = std::stoi(need("--beta"));
     } else if (arg == "--per-level") {
       per_level = true;
+    } else if (arg == "--damping") {
+      damping = std::stod(need("--damping"));
+    } else if (arg == "--tolerance") {
+      tolerance = std::stod(need("--tolerance"));
+    } else if (arg == "--max-iters") {
+      max_iters = std::stoi(need("--max-iters"));
     } else if (arg == "--validate") {
       do_validate = true;
     } else if (arg == "--help" || arg == "-h") {
@@ -732,23 +941,25 @@ int driver(int argc, char** argv) {
     usage(argv[0]);
     return 2;
   }
-  if (kernel != "bfs" && kernel != "cc" && kernel != "tc") {
-    std::cerr << "only --kernel bfs|cc|tc is implemented\n";
+  if (kernel != "bfs" && kernel != "cc" && kernel != "tc" &&
+      kernel != "pagerank") {
+    std::cerr << "only --kernel bfs|cc|tc|pagerank is implemented\n";
     return 2;
   }
   if (variant != "serial" && variant != "omp" && variant != "omp_atomic" &&
       variant != "omp_diropt" && variant != "omp_edge" &&
-      variant != "mpi_atomic") {
+      variant != "mpi_atomic" && variant != "mpi") {
     if (g_rank == 0) {
       std::cerr << "only --variant serial|omp|omp_atomic|omp_diropt|omp_edge|"
-                   "mpi_atomic is implemented\n";
+                   "mpi_atomic|mpi is implemented\n";
     }
     return 2;
   }
 #ifndef PARGRAPH_HAS_MPI
-  if (variant == "mpi_atomic") {
+  if (variant == "mpi_atomic" || variant == "mpi") {
     if (g_rank == 0) {
-      std::cerr << "mpi_atomic requires configuring with -DPARGRAPH_ENABLE_MPI=ON\n";
+      std::cerr << "mpi variants require configuring with "
+                   "-DPARGRAPH_ENABLE_MPI=ON\n";
     }
     return 2;
   }
@@ -773,12 +984,29 @@ int driver(int argc, char** argv) {
     }
     return 2;
   }
+  if (kernel == "bfs" && variant == "mpi") {
+    if (g_rank == 0) {
+      std::cerr << "BFS uses --variant mpi_atomic (not mpi)\n";
+    }
+    return 2;
+  }
+  if (kernel == "pagerank" && variant != "serial" && variant != "omp" &&
+      variant != "omp_atomic" && variant != "mpi" && variant != "mpi_atomic") {
+    if (g_rank == 0) {
+      std::cerr << "PageRank supports --variant serial|omp|omp_atomic|mpi\n";
+    }
+    return 2;
+  }
+  if (kernel == "pagerank" && variant == "mpi_atomic") {
+    // Accept alias: PageRank MPI pull is registered as "mpi".
+    variant = "mpi";
+  }
 #ifdef PARGRAPH_HAS_MPI
   int world = 1;
   if (MPI_Comm_size(MPI_COMM_WORLD, &world) != MPI_SUCCESS) {
     throw std::runtime_error("MPI_Comm_size failed");
   }
-  if (world > 1 && variant != "mpi_atomic" && g_rank != 0) {
+  if (world > 1 && variant != "mpi_atomic" && variant != "mpi" && g_rank != 0) {
     return 0;
   }
 #else
@@ -798,17 +1026,20 @@ int driver(int argc, char** argv) {
     meta.algo = algo;
     meta.orient = orient;
     meta.intersect = intersect;
+    meta.damping = damping;
+    meta.tolerance = tolerance;
+    meta.max_iters = max_iters;
     // Validate TC flag values early (throws on bad input).
     if (kernel == "tc") {
       (void)parse_orient(orient);
       (void)parse_intersect(intersect);
     }
-    if (variant == "mpi_atomic" && threads <= 0) {
+    if ((variant == "mpi_atomic" || variant == "mpi") && threads <= 0) {
       threads = std::max(1, omp_get_num_procs() / std::max(1, world));
     }
     if (variant == "omp" || variant == "omp_atomic" ||
         variant == "omp_diropt" || variant == "omp_edge" ||
-        variant == "mpi_atomic") {
+        variant == "mpi_atomic" || variant == "mpi") {
       if (threads > 0) {
         omp_set_num_threads(threads);
       }
@@ -824,7 +1055,7 @@ int driver(int argc, char** argv) {
     load_timer.stop();
     double load_ms = load_timer.elapsed_ms();
 #ifdef PARGRAPH_HAS_MPI
-    if (variant == "mpi_atomic") {
+    if (variant == "mpi_atomic" || variant == "mpi") {
       double load_max = 0.0;
       if (MPI_Allreduce(&load_ms, &load_max, 1, MPI_DOUBLE, MPI_MAX,
                         MPI_COMM_WORLD) != MPI_SUCCESS) {
@@ -849,9 +1080,24 @@ int driver(int argc, char** argv) {
       return 1;
     }
 
+    // Reverse CSR for pull PageRank / serial oracle (excluded from kernel time).
+    // Built for every PageRank variant so --validate can compare against pull
+    // serial even when the timed variant is push (omp_atomic).
+    pargraph::Graph in_g;
+    if (kernel == "pagerank") {
+      pargraph::Timer rev_timer;
+      rev_timer.start();
+      in_g = pargraph::build_reverse_csr(g);
+      rev_timer.stop();
+      if (g_rank == 0) {
+        std::cout << "Built reverse CSR in " << rev_timer.elapsed_ms()
+                  << " ms\n";
+      }
+    }
+
     pargraph::MpiVertexPart part;
 #ifdef PARGRAPH_HAS_MPI
-    if (variant == "mpi_atomic") {
+    if (variant == "mpi_atomic" || variant == "mpi") {
       if (MPI_Barrier(MPI_COMM_WORLD) != MPI_SUCCESS) {
         throw std::runtime_error("MPI_Barrier failed");
       }
@@ -876,7 +1122,7 @@ int driver(int argc, char** argv) {
                 << " directed=" << (g.directed ? "yes" : "no")
                 << " variant=" << variant << " threads=" << meta.threads
                 << " ranks=" << meta.ranks;
-      if (variant == "mpi_atomic") {
+      if (variant == "mpi_atomic" || variant == "mpi") {
         std::cout << " distribution_ms=" << meta.distribution_time_ms
                   << " owned=[" << part.lo << "," << part.hi << ")";
       }
@@ -890,6 +1136,10 @@ int driver(int argc, char** argv) {
     }
     if (kernel == "cc") {
       return run_cc(g, meta, trials, do_validate, output_path, &part);
+    }
+    if (kernel == "pagerank") {
+      return run_pagerank(g, in_g, meta, trials, do_validate, output_path,
+                          &part);
     }
     return run_tc(g, meta, trials, do_validate, output_path);
   } catch (const std::invalid_argument& ex) {

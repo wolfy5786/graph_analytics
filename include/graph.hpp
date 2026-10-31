@@ -76,4 +76,8 @@ ValidationResult validate_csr(const Graph& g);
 
 bool graphs_equal(const Graph& a, const Graph& b);
 
+// Transpose adjacency: out-CSR -> in-CSR (same V/E, directed/sorted flags).
+// Used by pull PageRank so each vertex reads its in-neighbors.
+Graph build_reverse_csr(const Graph& g);
+
 }  // namespace pargraph

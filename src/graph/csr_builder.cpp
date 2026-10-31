@@ -323,4 +323,24 @@ bool graphs_equal(const Graph& a, const Graph& b) {
          a.offsets == b.offsets && a.neighbors == b.neighbors;
 }
 
+Graph build_reverse_csr(const Graph& g) {
+  std::vector<std::pair<vtx_t, vtx_t>> edges;
+  edges.reserve(static_cast<std::size_t>(g.num_edges));
+  for (offset_t u = 0; u < g.num_vertices; ++u) {
+    const auto* begin = g.neighbors_begin(static_cast<vtx_t>(u));
+    const auto* end = g.neighbors_end(static_cast<vtx_t>(u));
+    for (const auto* it = begin; it != end; ++it) {
+      edges.emplace_back(*it, static_cast<vtx_t>(u));  // reverse u->v to v->u
+    }
+  }
+  BuildOptions opts;
+  opts.make_undirected = false;
+  opts.dedupe = false;  // preserve multi-edges if present
+  opts.drop_self_loops = false;
+  opts.sort_adjacency = g.sorted;
+  Graph rev = build_csr_from_edges(std::move(edges), g.num_vertices, opts);
+  rev.directed = g.directed;
+  return rev;
+}
+
 }  // namespace pargraph
