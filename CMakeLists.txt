@@ -21,6 +21,7 @@ add_library(pargraph_core STATIC
   src/bfs/serial.cpp
   src/bfs/omp.cpp
   src/bfs/omp_atomic.cpp
+  src/bfs/omp_diropt.cpp
   src/cc/serial.cpp
   src/tc/serial.cpp
   src/tc/omp.cpp
@@ -111,6 +112,19 @@ if(PARGRAPH_BUILD_TESTS)
   )
   add_test(NAME bfs_omp_atomic COMMAND test_bfs_omp_atomic)
 
+  add_executable(test_bfs_omp_diropt tests/test_bfs_omp_diropt.cpp)
+  target_link_libraries(test_bfs_omp_diropt PRIVATE pargraph_core)
+  target_compile_definitions(test_bfs_omp_diropt PRIVATE
+    PARGRAPH_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+  )
+  add_test(NAME bfs_omp_diropt COMMAND test_bfs_omp_diropt)
+
+  add_executable(bench_bfs_parallel tests/bench_bfs_parallel.cpp)
+  target_link_libraries(bench_bfs_parallel PRIVATE pargraph_core)
+  target_compile_definitions(bench_bfs_parallel PRIVATE
+    PARGRAPH_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+  )
+
   if(PARGRAPH_ENABLE_MPI AND PARGRAPH_MPIEXEC)
     add_executable(test_bfs_mpi_atomic tests/test_bfs_mpi_atomic.cpp)
     target_link_libraries(test_bfs_mpi_atomic PRIVATE pargraph_core)
@@ -158,5 +172,5 @@ if(PARGRAPH_BUILD_TESTS)
   add_test(NAME tc_omp_edge COMMAND test_tc_omp_edge)
 endif()
 
-message(STATUS "pargraph: serial+omp(+atomic) BFS, serial CC, serial+omp(+edge) TC, optional MPI atomic BFS")
+message(STATUS "pargraph: serial+omp(+atomic,+diropt) BFS, serial CC, serial+omp(+edge) TC, optional MPI atomic BFS")
 message(STATUS "  CUDA=${PARGRAPH_ENABLE_CUDA} MPI=${PARGRAPH_ENABLE_MPI} OpenMP=ON")

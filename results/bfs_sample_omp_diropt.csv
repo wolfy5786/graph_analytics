@@ -1,0 +1,7 @@
+timestamp_utc,git_commit,hostname,os,cpu,compiler,build_type,kernel,variant,graph,num_vertices,num_edges,directed,threads,ranks,seed,sources_requested,trials_requested,load_time_ms,source,trial,is_warmup,time_ms,visited,edges_examined,teps,validated,valid_ok
+2026-10-30T21:37:31Z,7a2eb80,cursor,Linux,unknown,Clang,Release,bfs,omp_diropt,/workspace/tests/tiny_graphs/bfs_sample.csr,6,12,0,2,1,42,2,2,0,0,-1,1,0.027844,6,12,430973,1,1
+2026-10-30T21:37:31Z,7a2eb80,cursor,Linux,unknown,Clang,Release,bfs,omp_diropt,/workspace/tests/tiny_graphs/bfs_sample.csr,6,12,0,2,1,42,2,2,0,0,0,0,0.015489,6,12,774743,1,1
+2026-10-30T21:37:31Z,7a2eb80,cursor,Linux,unknown,Clang,Release,bfs,omp_diropt,/workspace/tests/tiny_graphs/bfs_sample.csr,6,12,0,2,1,42,2,2,0,0,1,0,0.014958,6,12,802246,1,1
+2026-10-30T21:37:31Z,7a2eb80,cursor,Linux,unknown,Clang,Release,bfs,omp_diropt,/workspace/tests/tiny_graphs/bfs_sample.csr,6,12,0,2,1,42,2,2,0,3,-1,1,0.01537,6,12,780742,1,1
+2026-10-30T21:37:31Z,7a2eb80,cursor,Linux,unknown,Clang,Release,bfs,omp_diropt,/workspace/tests/tiny_graphs/bfs_sample.csr,6,12,0,2,1,42,2,2,0,3,0,0,0.01517,6,12,791035,1,1
+2026-10-30T21:37:31Z,7a2eb80,cursor,Linux,unknown,Clang,Release,bfs,omp_diropt,/workspace/tests/tiny_graphs/bfs_sample.csr,6,12,0,2,1,42,2,2,0,3,1,0,0.015243,6,12,787247,1,1
