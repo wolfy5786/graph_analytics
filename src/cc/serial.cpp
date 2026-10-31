@@ -73,13 +73,24 @@ CcResult cc_serial_unionfind(const Graph& g) {
     }
   }
 
+  for (offset_t v = 0; v < n; ++v) {
+    r.label[static_cast<std::size_t>(v)] = uf.find(static_cast<vtx_t>(v));
+  }
+  cc_fill_aggregates(r);
+  return r;
+}
+
+void cc_fill_aggregates(CcResult& r) {
+  const offset_t n = static_cast<offset_t>(r.label.size());
+  r.num_components = 0;
+  r.largest_component = 0;
+  if (n == 0) {
+    return;
+  }
   std::vector<std::uint64_t> sizes(static_cast<std::size_t>(n), 0);
   for (offset_t v = 0; v < n; ++v) {
-    const vtx_t root = uf.find(static_cast<vtx_t>(v));
-    r.label[static_cast<std::size_t>(v)] = root;
-    ++sizes[root];
+    ++sizes[r.label[static_cast<std::size_t>(v)]];
   }
-
   for (offset_t v = 0; v < n; ++v) {
     const std::uint64_t sz = sizes[static_cast<std::size_t>(v)];
     if (sz > 0) {
@@ -89,8 +100,34 @@ CcResult cc_serial_unionfind(const Graph& g) {
       }
     }
   }
+}
 
-  return r;
+bool cc_same_partition(const std::vector<vtx_t>& a, const std::vector<vtx_t>& b) {
+  if (a.size() != b.size()) {
+    return false;
+  }
+  const std::size_t n = a.size();
+  // Labels are vertex ids in [0, n). Map each side's root to the other.
+  std::vector<vtx_t> a_to_b(n, static_cast<vtx_t>(n));
+  std::vector<vtx_t> b_to_a(n, static_cast<vtx_t>(n));
+  for (std::size_t i = 0; i < n; ++i) {
+    const vtx_t la = a[i];
+    const vtx_t lb = b[i];
+    if (la >= n || lb >= n) {
+      return false;
+    }
+    if (a_to_b[la] == n) {
+      a_to_b[la] = lb;
+    } else if (a_to_b[la] != lb) {
+      return false;
+    }
+    if (b_to_a[lb] == n) {
+      b_to_a[lb] = la;
+    } else if (b_to_a[lb] != la) {
+      return false;
+    }
+  }
+  return true;
 }
 
 CcValidation validate_cc(const Graph& g, const CcResult& r) {

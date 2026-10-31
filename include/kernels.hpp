@@ -101,14 +101,15 @@ struct BfsValidation {
 // Graph500-style tree / level checks against dist/parent.
 BfsValidation validate_bfs(const Graph& g, vtx_t source, const BfsResult& r);
 
-// Connected components via serial union-find (path compression + union by rank).
-// Treats each stored arc u->v as an undirected link (weakly connected components
-// on directed CSRs; full CC on undirected/symmetrized CSRs).
+// Connected components. Every variant treats each stored arc u->v as an
+// undirected link (WCC on directed CSRs; full CC on undirected/symmetrized).
 struct CcResult {
   std::vector<vtx_t> label;  // canonical root id per vertex (after compress)
   std::uint64_t num_components = 0;
   std::uint64_t largest_component = 0;
-  std::uint64_t edges_united = 0;  // arcs processed in the union pass
+  std::uint64_t edges_united = 0;  // arcs examined / hooked
+  std::uint64_t rounds = 0;        // iterations / hooking rounds to fixpoint
+  MpiPhaseStats mpi;
 };
 
 struct CcValidation {
@@ -116,11 +117,39 @@ struct CcValidation {
   std::vector<std::string> errors;
 };
 
+// Serial union-find (path compression + union by rank). Correctness oracle.
 CcResult cc_serial_unionfind(const Graph& g);
+
+// OpenMP two-phase label propagation: each round computes next[v] =
+// min(label[v], min neighbor labels) into a private buffer, then swaps.
+// No atomics; barriers separate the read and write phases.
+// num_threads <= 0 leaves the OpenMP default.
+CcResult cc_omp(const Graph& g, int num_threads = 0);
+
+// OpenMP CC with atomic parent updates. algo selects the hooking rule:
+//   "labelprop" (default) — atomicMin of labels over endpoints each round
+//   "sv"                  — Shiloach-Vishkin hook (CAS) + pointer jumping
+//   "afforest"            — neighbor sampling then finish small components
+CcResult cc_omp_atomic(const Graph& g, int num_threads = 0,
+                       const std::string& algo = "labelprop");
+
+#if defined(PARGRAPH_HAS_MPI)
+// Hybrid MPI + OpenMP label propagation. Each rank owns a 1D vertex slice,
+// expands its owned edges with OpenMP atomicMin, then Allreduce(MPI_MIN) on
+// the full label array. Labels/partitions match serial WCC. MPI must already
+// be initialized. num_threads <= 0 leaves the OpenMP default.
+CcResult cc_mpi_atomic(const MpiVertexPart& part, int num_threads = 0);
+#endif
+
+// From canonical labels, set num_components / largest_component.
+void cc_fill_aggregates(CcResult& r);
 
 // Partition checks: every edge endpoints share a label; sizes sum to V;
 // num_components / largest_component match the label multiset.
 CcValidation validate_cc(const Graph& g, const CcResult& r);
+
+// True iff a and b induce the same partition (label values may differ).
+bool cc_same_partition(const std::vector<vtx_t>& a, const std::vector<vtx_t>& b);
 
 // ---- Triangle counting ----------------------------------------------------
 // Orient undirected (or symmetrized) edges from lower to higher rank so each
